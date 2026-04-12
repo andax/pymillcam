@@ -84,6 +84,8 @@ class Operation(BaseModel):
     cut_depth: float = 0.0
     safe_height: float | None = None
     clearance_plane: float | None = None
+    # Per-operation override of ProjectSettings.chord_tolerance. None = inherit.
+    chord_tolerance: float | None = None
 
 
 class ProfileOp(Operation):

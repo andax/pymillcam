@@ -1,19 +1,29 @@
 """Profile toolpath generator.
 
-Takes a ProfileOp + the surrounding Project, resolves geometry and tool
-settings, and emits IR for a multi-depth offset cut along each referenced
-contour. MVP scope: offset by tool radius (inside / outside / on_line),
-plunge entry, direct exit. Lead-in/out, tabs, and ramp entry are deferred
-to later work — the ProfileOp fields are persisted but not yet consumed.
+Consumes a ProfileOp + Project, walks the referenced contour as a segment
+chain, and emits IR. Arc segments translate directly to ARC_CW / ARC_CCW
+instructions — they are not chord-approximated in the engine output.
+
+Inside/outside offsetting still routes through Shapely's Polygon.buffer,
+which discretizes arcs into chords at the configured chord_tolerance. That
+is the only remaining lossy step and is isolated to `_offset_contour`
+— when we add an arc-aware offset, the rest of the generator needs no
+changes. `OffsetSide.ON_LINE` bypasses the buffer entirely, so any arcs
+in the source geometry reach the G-code intact.
 """
 from __future__ import annotations
 
-from shapely.geometry import LineString, Polygon
-from shapely.geometry.base import BaseGeometry
+from shapely.geometry import Polygon
 
 from pymillcam.core.geometry import GeometryEntity
 from pymillcam.core.operations import OffsetSide, ProfileOp
 from pymillcam.core.project import Project
+from pymillcam.core.segments import (
+    ArcSegment,
+    LineSegment,
+    Segment,
+    segments_to_shapely,
+)
 from pymillcam.core.tools import ToolController
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
 
@@ -31,6 +41,11 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
     clearance = (
         op.clearance_plane if op.clearance_plane is not None else project.settings.clearance_plane
     )
+    chord_tolerance = (
+        op.chord_tolerance
+        if op.chord_tolerance is not None
+        else project.settings.chord_tolerance
+    )
     stepdown = _resolve_stepdown(op, tool_controller)
     tool_radius = float(tool_controller.tool.geometry["diameter"]) / 2.0
 
@@ -44,10 +59,10 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
 
     for ref in op.geometry_refs:
         entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
-        path = _offset_contour(entity, tool_radius, op.offset_side)
+        segments = _offset_contour(entity, tool_radius, op.offset_side, chord_tolerance)
         _emit_contour_passes(
             instructions,
-            path,
+            segments,
             tool_controller=tool_controller,
             cut_depth=op.cut_depth,
             multi_depth=op.multi_depth,
@@ -86,48 +101,62 @@ def _resolve_entity(layer_name: str, entity_id: str, project: Project) -> Geomet
 def _resolve_stepdown(op: ProfileOp, tc: ToolController) -> float:
     if op.stepdown is not None:
         return op.stepdown
-    # No per-material cascade is wired up yet — take the first entry if present,
-    # otherwise fall back to a conservative default. Material-aware resolution
-    # will land when MaterialDatabase arrives.
     if tc.tool.cutting_data:
         return next(iter(tc.tool.cutting_data.values())).stepdown
     return DEFAULT_STEPDOWN_MM
 
 
-def _offset_contour(entity: GeometryEntity, radius: float, side: OffsetSide) -> LineString:
-    geom: BaseGeometry = entity.geom
-
-    if side is OffsetSide.ON_LINE or radius == 0:
-        if isinstance(geom, Polygon):
-            return LineString(geom.exterior.coords)
-        if isinstance(geom, LineString):
-            return geom
+def _offset_contour(
+    entity: GeometryEntity,
+    radius: float,
+    side: OffsetSide,
+    chord_tolerance: float,
+) -> list[Segment]:
+    if not entity.segments:
         raise ProfileGenerationError(
-            f"Unsupported geometry type for profile: {geom.geom_type}"
+            "Profile operation requires a contour entity; got a point-only entity"
         )
 
-    if isinstance(geom, Polygon):
-        distance = radius if side is OffsetSide.OUTSIDE else -radius
-        offset = geom.buffer(distance, join_style="mitre")
-        if offset.is_empty:
-            raise ProfileGenerationError(
-                f"Inside offset by {radius} mm removes all geometry — tool too large"
-            )
-        if not isinstance(offset, Polygon):
-            raise ProfileGenerationError(
-                f"Offset produced {offset.geom_type}; MVP only supports a single polygon result"
-            )
-        return LineString(offset.exterior.coords)
+    if side is OffsetSide.ON_LINE or radius == 0:
+        return list(entity.segments)
 
-    raise ProfileGenerationError(
-        "Inside/outside offset requires a closed contour; got open LineString. "
-        "Use offset_side=ON_LINE for open contours."
+    if not entity.closed:
+        raise ProfileGenerationError(
+            "Inside/outside offset requires a closed contour; got an open segment chain. "
+            "Use offset_side=ON_LINE for open contours."
+        )
+
+    shadow = segments_to_shapely(
+        entity.segments, closed=True, tolerance=chord_tolerance
     )
+    if not isinstance(shadow, Polygon):
+        raise ProfileGenerationError(
+            f"Expected a Polygon shadow for closed contour; got {shadow.geom_type}"
+        )
+
+    distance = radius if side is OffsetSide.OUTSIDE else -radius
+    offset = shadow.buffer(distance, join_style="mitre")
+    if offset.is_empty:
+        raise ProfileGenerationError(
+            f"Inside offset by {radius} mm removes all geometry — tool too large"
+        )
+    if not isinstance(offset, Polygon):
+        raise ProfileGenerationError(
+            f"Offset produced {offset.geom_type}; MVP only supports a single polygon result"
+        )
+
+    # Shapely's buffer has already collapsed arcs to chords, so every output
+    # segment is a line. Arc-aware offsetting (future) will return a mix.
+    coords = list(offset.exterior.coords)
+    return [
+        LineSegment(start=(coords[i][0], coords[i][1]), end=(coords[i + 1][0], coords[i + 1][1]))
+        for i in range(len(coords) - 1)
+    ]
 
 
 def _emit_contour_passes(
     instructions: list[IRInstruction],
-    path: LineString,
+    segments: list[Segment],
     *,
     tool_controller: ToolController,
     cut_depth: float,
@@ -136,11 +165,10 @@ def _emit_contour_passes(
     safe_height: float,
     clearance: float,
 ) -> None:
-    coords = [(float(x), float(y)) for x, y, *_ in path.coords]
-    if len(coords) < 2:
+    if not segments:
         return
 
-    start_x, start_y = coords[0]
+    start_x, start_y = segments[0].start
     z_levels = _z_levels(cut_depth, stepdown, multi_depth)
     if not z_levels:
         return
@@ -153,12 +181,12 @@ def _emit_contour_passes(
         instructions.append(
             IRInstruction(type=MoveType.FEED, z=z, f=tool_controller.feed_z)
         )
-        for x, y in coords[1:]:
-            instructions.append(
-                IRInstruction(type=MoveType.FEED, x=x, y=y, f=tool_controller.feed_xy)
-            )
+        for seg in segments:
+            _emit_segment(instructions, seg, tool_controller.feed_xy)
+
         is_last = pass_index == len(z_levels) - 1
-        if not is_last and (coords[-1] != (start_x, start_y)):
+        end_x, end_y = segments[-1].end
+        if not is_last and (end_x, end_y) != (start_x, start_y):
             instructions.append(
                 IRInstruction(
                     type=MoveType.FEED, x=start_x, y=start_y, f=tool_controller.feed_xy
@@ -168,12 +196,31 @@ def _emit_contour_passes(
     instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
 
 
-def _z_levels(cut_depth: float, stepdown: float, multi_depth: bool) -> list[float]:
-    """Z values (most shallow → deepest, inclusive of cut_depth).
+def _emit_segment(instructions: list[IRInstruction], seg: Segment, feed_xy: float) -> None:
+    if isinstance(seg, LineSegment):
+        ex, ey = seg.end
+        instructions.append(IRInstruction(type=MoveType.FEED, x=ex, y=ey, f=feed_xy))
+        return
+    if isinstance(seg, ArcSegment):
+        sx, sy = seg.start
+        ex, ey = seg.end
+        cx, cy = seg.center
+        move_type = MoveType.ARC_CCW if seg.ccw else MoveType.ARC_CW
+        instructions.append(
+            IRInstruction(
+                type=move_type,
+                x=ex,
+                y=ey,
+                i=cx - sx,
+                j=cy - sy,
+                f=feed_xy,
+            )
+        )
+        return
+    raise ProfileGenerationError(f"Unknown segment type: {type(seg).__name__}")
 
-    cut_depth is expected to be negative (below stock top). Non-negative
-    cut_depth means no cutting and returns an empty list.
-    """
+
+def _z_levels(cut_depth: float, stepdown: float, multi_depth: bool) -> list[float]:
     if cut_depth >= 0:
         return []
     if not multi_depth or stepdown <= 0:

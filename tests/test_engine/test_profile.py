@@ -8,7 +8,7 @@ import pytest
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.operations import GeometryRef, MillingDirection, OffsetSide, ProfileOp
 from pymillcam.core.project import Project
-from pymillcam.core.segments import LineSegment
+from pymillcam.core.segments import ArcSegment, LineSegment
 from pymillcam.core.tools import CuttingData, Tool, ToolController
 from pymillcam.engine.ir import MoveType
 from pymillcam.engine.profile import (
@@ -226,3 +226,90 @@ def test_stepdown_defaults_when_no_cutting_data() -> None:
     plunges = [i.z for i in tp.instructions if i.type is MoveType.FEED and i.z is not None]
     # Default DEFAULT_STEPDOWN_MM = 1.0 → 2 passes at -1, -2
     assert plunges == [-1.0, -2.0]
+
+
+# ---------- Arc preservation through the engine --------------------------
+
+def _project_with_arc_segment(
+    *,
+    offset_side: OffsetSide = OffsetSide.ON_LINE,
+    sweep_deg: float = 90.0,
+) -> tuple[Project, ProfileOp]:
+    """Build a project whose contour is a single ArcSegment, not chord-approximated."""
+    arc = ArcSegment(center=(0, 0), radius=10, start_angle_deg=0, sweep_deg=sweep_deg)
+    entity = GeometryEntity(segments=[arc], closed=(abs(sweep_deg) >= 360))
+    layer = GeometryLayer(name="Profile", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0, "flute_length": 15,
+                                        "total_length": 50, "shank_diameter": 3,
+                                        "flute_count": 2})
+    tc = ToolController(tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+                        spindle_rpm=18000)
+    op = ProfileOp(
+        name="ArcProfile",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name=layer.name, entity_id=entity.id)],
+        cut_depth=-2.0,
+        stepdown=1.0,
+        multi_depth=True,
+        offset_side=offset_side,
+        direction=MillingDirection.CLIMB,
+    )
+    project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
+    return project, op
+
+
+def test_arc_segment_emits_arc_ccw_ir_on_line() -> None:
+    project, op = _project_with_arc_segment(sweep_deg=90.0)
+    tp = generate_profile_toolpath(op, project)
+    arc_moves = [i for i in tp.instructions if i.type is MoveType.ARC_CCW]
+    # Two passes (cut_depth=-2, stepdown=1) → two arc moves.
+    assert len(arc_moves) == 2
+    move = arc_moves[0]
+    # Arc from (10, 0) CCW 90° around (0, 0) ends at (0, 10); I=-10, J=0.
+    assert math.isclose(move.x, 0.0, abs_tol=1e-9)
+    assert math.isclose(move.y, 10.0, abs_tol=1e-9)
+    assert math.isclose(move.i, -10.0)
+    assert math.isclose(move.j, 0.0)
+    assert move.f == 1200.0
+
+
+def test_arc_segment_emits_arc_cw_for_negative_sweep() -> None:
+    project, op = _project_with_arc_segment(sweep_deg=-90.0)
+    tp = generate_profile_toolpath(op, project)
+    assert any(i.type is MoveType.ARC_CW for i in tp.instructions)
+    assert not any(i.type is MoveType.ARC_CCW for i in tp.instructions)
+
+
+def test_on_line_offset_never_discretizes_arc_to_many_chords() -> None:
+    """ON_LINE offset must not chord-approximate arcs, even with high-sweep arcs."""
+    project, op = _project_with_arc_segment(sweep_deg=180.0)
+    tp = generate_profile_toolpath(op, project)
+    # Each pass emits exactly one ARC move — if we were discretizing, we'd see
+    # a stream of FEED moves along the arc instead.
+    arc_moves = [i for i in tp.instructions if i.type is MoveType.ARC_CCW]
+    assert len(arc_moves) == 2  # 2 passes × 1 arc per pass
+
+
+def test_full_circle_arc_emits_one_arc_move_per_pass() -> None:
+    """A full circle should be one G02/G03 per pass, not 72 chord segments."""
+    project, op = _project_with_arc_segment(sweep_deg=360.0)
+    tp = generate_profile_toolpath(op, project)
+    arc_moves = [i for i in tp.instructions if i.type is MoveType.ARC_CCW]
+    assert len(arc_moves) == 2  # 2 passes, each a single full-circle arc
+
+
+def test_chord_tolerance_cascades_from_operation() -> None:
+    """Operation.chord_tolerance overrides ProjectSettings.chord_tolerance."""
+    project, op, _ = _project_with_rectangle(
+        offset_side=OffsetSide.OUTSIDE, tool_diameter=4.0, stepdown=2.0,
+    )
+    # Tighten operation tolerance; buffer result shouldn't change here (rectangle
+    # has only line segments) but the resolution path is exercised.
+    op.chord_tolerance = 0.001
+    tp = generate_profile_toolpath(op, project)
+    # Sanity: still produces XY feeds.
+    xy_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.x is not None and i.z is None
+    ]
+    assert xy_feeds
