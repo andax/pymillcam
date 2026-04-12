@@ -13,6 +13,8 @@ in the source geometry reach the G-code intact.
 """
 from __future__ import annotations
 
+import math
+
 from shapely.geometry import Polygon
 
 from pymillcam.core.geometry import GeometryEntity
@@ -186,7 +188,9 @@ def _emit_contour_passes(
 
         is_last = pass_index == len(z_levels) - 1
         end_x, end_y = segments[-1].end
-        if not is_last and (end_x, end_y) != (start_x, start_y):
+        # Tolerance compare — full-circle arcs return mathematically to start
+        # but floating-point precision can leave a sub-picometre residual.
+        if not is_last and math.hypot(end_x - start_x, end_y - start_y) > 1e-6:
             instructions.append(
                 IRInstruction(
                     type=MoveType.FEED, x=start_x, y=start_y, f=tool_controller.feed_xy
