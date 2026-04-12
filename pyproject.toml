@@ -16,7 +16,7 @@ keywords = ["cnc", "cam", "gcode", "milling", "routing"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: End Users/Desktop",
-    "Topic :: Scientific/Engineering :: Manufacturing",
+    "Topic :: Scientific/Engineering",
     "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

@@ -22,16 +22,29 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 
 ## Installation
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
 ```bash
 # Clone the repository
 git clone https://github.com/pymillcam/pymillcam.git
 cd pymillcam
 
-# Install in development mode
-pip install -e '.[dev]'
+# Create the virtual environment and install all deps (including dev extras)
+uv sync --extra dev
 
 # Run
-python -m pymillcam
+uv run pymillcam
+# or equivalently: uv run python -m pymillcam
+```
+
+Common dev commands:
+
+```bash
+uv run pytest          # run the test suite
+uv run ruff check .    # lint
+uv run mypy src        # type-check
+uv add <package>       # add a runtime dependency
+uv add --dev <package> # add a dev dependency
 ```
 
 ## Requirements
