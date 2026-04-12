@@ -67,6 +67,12 @@ warn_unused_configs = true
 module = "pymillcam.ui.*"
 ignore_missing_imports = true
 
+# ezdxf ships py.typed but doesn't declare __all__ in most submodules, so
+# strict mode flags every import as an implicit re-export.
+[[tool.mypy.overrides]]
+module = "ezdxf.*"
+implicit_reexport = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
