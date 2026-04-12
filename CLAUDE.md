@@ -68,14 +68,23 @@ Transforms IR → G-code for specific controllers.
 
 ## Development Phase (Current: Phase 1)
 Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-code.
-1. Core Pydantic data models
-2. DXF import
-3. Basic profile toolpath (offset, multi-depth)
-4. IR + UCCNC post-processor
-5. Minimal PySide6 window (viewport + tree + output)
-6. Undo/redo command infrastructure
-7. Directional box selection
-8. Project save/load as JSON
+1. ✅ Core Pydantic data models
+2. ✅ DXF import (arcs preserved as ArcSegments, including LWPOLYLINE bulges)
+3. ✅ Basic profile toolpath (offset, multi-depth)
+4. ✅ IR + UCCNC post-processor (emits G2/G3 arcs; end-to-end DXF → G-code works)
+5. ⬜ Minimal PySide6 window (viewport + tree + output)
+6. ⬜ Undo/redo command infrastructure
+7. ⬜ Directional box selection
+8. ✅ Project save/load as JSON
+
+### Known limitations to revisit
+- `engine/profile.py::_offset_contour` still routes inside/outside offsets
+  through `Polygon.buffer`, collapsing arcs to chords. This is the only
+  remaining lossy interface; replacing it with an arc-aware offset
+  requires no changes to callers. `OffsetSide.ON_LINE` already preserves
+  arcs end-to-end.
+- Machine macros (program_start / program_end / tool_change) are defined
+  on `MachineDefinition` but not yet consumed by the post-processor.
 
 ## Code Style
 - Type hints everywhere
