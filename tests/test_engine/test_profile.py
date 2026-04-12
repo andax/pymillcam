@@ -4,11 +4,11 @@ from __future__ import annotations
 import math
 
 import pytest
-from shapely.geometry import LineString, Polygon
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.operations import GeometryRef, MillingDirection, OffsetSide, ProfileOp
 from pymillcam.core.project import Project
+from pymillcam.core.segments import LineSegment
 from pymillcam.core.tools import CuttingData, Tool, ToolController
 from pymillcam.engine.ir import MoveType
 from pymillcam.engine.profile import (
@@ -16,6 +16,17 @@ from pymillcam.engine.profile import (
     _z_levels,
     generate_profile_toolpath,
 )
+
+
+def _rect_segments(w: float = 50.0, h: float = 30.0, closed: bool = True) -> list[LineSegment]:
+    segs = [
+        LineSegment(start=(0, 0), end=(w, 0)),
+        LineSegment(start=(w, 0), end=(w, h)),
+        LineSegment(start=(w, h), end=(0, h)),
+    ]
+    if closed:
+        segs.append(LineSegment(start=(0, h), end=(0, 0)))
+    return segs
 
 
 def _project_with_rectangle(
@@ -27,12 +38,7 @@ def _project_with_rectangle(
     tool_diameter: float = 3.0,
     closed: bool = True,
 ) -> tuple[Project, ProfileOp, GeometryEntity]:
-    rect: Polygon | LineString
-    if closed:
-        rect = Polygon([(0, 0), (50, 0), (50, 30), (0, 30)])
-    else:
-        rect = LineString([(0, 0), (50, 0), (50, 30), (0, 30)])
-    entity = GeometryEntity(geom=rect)
+    entity = GeometryEntity(segments=_rect_segments(closed=closed), closed=closed)
     layer = GeometryLayer(name="Profile_Outside", entities=[entity])
     tool = Tool(name="flat", geometry={"diameter": tool_diameter, "flute_length": 15,
                                         "total_length": 50, "shank_diameter": 3,
