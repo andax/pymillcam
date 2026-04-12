@@ -29,8 +29,8 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 git clone https://github.com/pymillcam/pymillcam.git
 cd pymillcam
 
-# Create the virtual environment and install all deps (including dev extras)
-uv sync --extra dev
+# Create the virtual environment and install all deps (including the dev group)
+uv sync
 
 # Run
 uv run pymillcam
@@ -44,7 +44,7 @@ uv run pytest          # run the test suite
 uv run ruff check .    # lint
 uv run mypy src        # type-check
 uv add <package>       # add a runtime dependency
-uv add --dev <package> # add a dev dependency
+uv add --group dev <package>  # add a dev dependency
 ```
 
 ## Requirements

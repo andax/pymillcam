@@ -1,15 +1,21 @@
 """Project model — top-level container for a CAM job."""
+from __future__ import annotations
+
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
-from typing import Optional
-from enum import Enum
+
+from pymillcam.core.geometry import GeometryLayer
+from pymillcam.core.operations import ProfileOp
+from pymillcam.core.tools import ToolController
 
 
-class ZReference(str, Enum):
+class ZReference(StrEnum):
     TOP_OF_STOCK = "top_of_stock"
     BOTTOM_OF_STOCK = "bottom_of_stock"
 
 
-class WorkOrigin(str, Enum):
+class WorkOrigin(StrEnum):
     FRONT_LEFT = "front_left"
     FRONT_RIGHT = "front_right"
     CENTER = "center"
@@ -17,7 +23,7 @@ class WorkOrigin(str, Enum):
     BACK_RIGHT = "back_right"
 
 
-class Units(str, Enum):
+class Units(StrEnum):
     MM = "mm"
     INCH = "inch"
 
@@ -43,8 +49,9 @@ class Project(BaseModel):
     """Top-level project container."""
     version: int = 1
     name: str = "Untitled"
-    machine_id: Optional[str] = None
+    machine_id: str | None = None
     stock: Stock = Field(default_factory=Stock)
     settings: ProjectSettings = Field(default_factory=ProjectSettings)
-    # geometry_layers, operations, tool_controllers, fixture_setup
-    # will be added as those modules are built
+    geometry_layers: list[GeometryLayer] = Field(default_factory=list)
+    tool_controllers: list[ToolController] = Field(default_factory=list)
+    operations: list[ProfileOp] = Field(default_factory=list)

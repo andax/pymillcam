@@ -32,15 +32,6 @@ dependencies = [
     "numpy>=1.26",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pytest-qt>=4.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
-]
-
 [project.scripts]
 pymillcam = "pymillcam.__main__:main"
 
@@ -59,7 +50,10 @@ line-length = 100
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+# TCH (flake8-type-checking) is intentionally omitted: Pydantic resolves
+# annotations at runtime, so guarding model-field imports under TYPE_CHECKING
+# would break validation. Revisit if we adopt model_rebuild() broadly.
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -67,6 +61,22 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
+# pymillcam.ui.main_window is imported by __main__.py but doesn't exist yet.
+# Remove this override once the UI module is in place.
+[[tool.mypy.overrides]]
+module = "pymillcam.ui.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-qt>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-shapely>=2.1.0.20260408",
+]

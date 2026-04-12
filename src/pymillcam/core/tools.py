@@ -1,10 +1,10 @@
 """Tool and ToolController models."""
+from enum import StrEnum
+
 from pydantic import BaseModel, Field
-from typing import Optional
-from enum import Enum
 
 
-class ToolShape(str, Enum):
+class ToolShape(StrEnum):
     ENDMILL = "endmill"
     BALLNOSE = "ballnose"
     VBIT = "vbit"
@@ -27,7 +27,7 @@ class Tool(BaseModel):
     version: int = 1
     name: str
     shape: ToolShape = ToolShape.ENDMILL
-    geometry: dict = Field(default_factory=lambda: {
+    geometry: dict[str, float | int] = Field(default_factory=lambda: {
         "diameter": 3.0,
         "flute_length": 15.0,
         "total_length": 50.0,

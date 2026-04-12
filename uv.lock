@@ -630,30 +630,35 @@ dependencies = [
     { name = "shapely" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-qt" },
     { name = "ruff" },
+    { name = "types-shapely" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "ezdxf", specifier = ">=1.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyclipper", specifier = ">=1.3" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyside6", specifier = ">=6.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "pytest-qt", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "shapely", specifier = ">=2.0" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=7.0" },
+    { name = "pytest-cov", specifier = ">=4.0" },
+    { name = "pytest-qt", specifier = ">=4.0" },
+    { name = "ruff", specifier = ">=0.4" },
+    { name = "types-shapely", specifier = ">=2.1.0.20260408" },
+]
 
 [[package]]
 name = "pyparsing"
@@ -904,6 +909,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/64/da524626d3b9cc40c168a13da8335fe1c51be12c0a63685cc6db7308daae/tomli-2.4.1-cp314-cp314t-win_amd64.whl", hash = "sha256:2c1c351919aca02858f740c6d33adea0c5deea37f9ecca1cc1ef9e884a619d26", size = 121196, upload-time = "2026-03-25T20:22:01.169Z" },
     { url = "https://files.pythonhosted.org/packages/5a/cd/e80b62269fc78fc36c9af5a6b89c835baa8af28ff5ad28c7028d60860320/tomli-2.4.1-cp314-cp314t-win_arm64.whl", hash = "sha256:eab21f45c7f66c13f2a9e0e1535309cee140182a9cdae1e041d02e47291e8396", size = 100393, upload-time = "2026-03-25T20:22:02.137Z" },
     { url = "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl", hash = "sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe", size = 14583, upload-time = "2026-03-25T20:22:03.012Z" },
+]
+
+[[package]]
+name = "types-shapely"
+version = "2.1.0.20260408"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/10/8d/bf9e3eb51249601e22d797481999a06fb34998c4db5c76804394f8a3fa28/types_shapely-2.1.0.20260408.tar.gz", hash = "sha256:8552549d9429baa52ec4331e43b5db3b334fc3a7f30da48663010b7454b1451c", size = 26529, upload-time = "2026-04-08T04:34:42.111Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/3d/cbec691f56e71636192a07bf6809f598bed06d869b03b4e2b1ad2f7df032/types_shapely-2.1.0.20260408-py3-none-any.whl", hash = "sha256:8a31e2b074342a363f0c9d0c7d6e1e6c0dcce302a92ef94d64d0ca2a2b94a1d1", size = 37818, upload-time = "2026-04-08T04:34:41.243Z" },
 ]
 
 [[package]]

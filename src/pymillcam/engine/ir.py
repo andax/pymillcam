@@ -1,10 +1,12 @@
 """Intermediate Representation for toolpath instructions."""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+from typing import Any
 
 
-class MoveType(str, Enum):
+class MoveType(StrEnum):
     RAPID = "rapid"
     FEED = "feed"
     ARC_CW = "arc_cw"
@@ -23,17 +25,17 @@ class MoveType(str, Enum):
 class IRInstruction:
     """A single abstract machine instruction."""
     type: MoveType
-    x: Optional[float] = None
-    y: Optional[float] = None
-    z: Optional[float] = None
-    f: Optional[float] = None  # feed rate
-    s: Optional[int] = None  # spindle RPM
-    i: Optional[float] = None  # arc center X offset
-    j: Optional[float] = None  # arc center Y offset
-    tool_number: Optional[int] = None
-    comment: Optional[str] = None
-    macro_name: Optional[str] = None
-    macro_params: dict = field(default_factory=dict)
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+    f: float | None = None  # feed rate
+    s: int | None = None  # spindle RPM
+    i: float | None = None  # arc center X offset
+    j: float | None = None  # arc center Y offset
+    tool_number: int | None = None
+    comment: str | None = None
+    macro_name: str | None = None
+    macro_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

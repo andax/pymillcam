@@ -1,9 +1,11 @@
 """PyMillCAM entry point."""
 import sys
 
+
 def main() -> None:
     """Launch PyMillCAM application."""
     from PySide6.QtWidgets import QApplication
+
     from pymillcam.ui.main_window import MainWindow
 
     app = QApplication(sys.argv)
