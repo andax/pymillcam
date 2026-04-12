@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pymillcam"
+version = "0.1.0"
+description = "A Python-based 2D/2.5D CAM tool for CNC routers and mills"
+readme = "README.md"
+license = "LGPL-3.0-or-later"
+requires-python = ">=3.11"
+authors = [
+    { name = "PyMillCAM Contributors" },
+]
+keywords = ["cnc", "cam", "gcode", "milling", "routing"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Scientific/Engineering :: Manufacturing",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "PySide6>=6.6",
+    "shapely>=2.0",
+    "ezdxf>=1.0",
+    "pyclipper>=1.3",
+    "pydantic>=2.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-qt>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+pymillcam = "pymillcam.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/pymillcam/pymillcam"
+Documentation = "https://pymillcam.readthedocs.io"
+Repository = "https://github.com/pymillcam/pymillcam"
+Issues = "https://github.com/pymillcam/pymillcam/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pymillcam"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
