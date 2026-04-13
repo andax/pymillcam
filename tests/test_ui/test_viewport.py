@@ -159,23 +159,115 @@ def test_hit_test_picks_nearest_entity_within_tolerance(viewport: Viewport) -> N
     assert (layer, entity_id) == (None, None)
 
 
-def test_set_selected_updates_state_without_emitting(
+def test_set_selection_updates_state_without_emitting(
     viewport: Viewport, qtbot: QtBot
 ) -> None:
     entity = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
     viewport.set_layers([GeometryLayer(name="L", entities=[entity])])
     with qtbot.assertNotEmitted(viewport.selection_changed):
-        viewport.set_selected("L", entity.id)
-    assert viewport.selected == ("L", entity.id)
+        viewport.set_selection([("L", entity.id)])
+    assert viewport.selection == [("L", entity.id)]
 
 
 def test_set_layers_drops_stale_selection(viewport: Viewport) -> None:
     entity = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
     viewport.set_layers([GeometryLayer(name="L", entities=[entity])])
-    viewport.set_selected("L", entity.id)
+    viewport.set_selection([("L", entity.id)])
     # Now replace with an empty layer list — the selection target is gone.
     viewport.set_layers([])
-    assert viewport.selected == (None, None)
+    assert viewport.selection == []
+
+
+def _drive_drag(viewport: Viewport, start: QPointF, end: QPointF) -> None:
+    """Replay a left-button press → move → release at the widget level."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    def _ev(kind, pos: QPointF, button: Qt.MouseButton) -> QMouseEvent:
+        return QMouseEvent(
+            kind,
+            pos,
+            viewport.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))),
+            button,
+            Qt.MouseButton.LeftButton if button == Qt.MouseButton.NoButton else button,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    left = Qt.MouseButton.LeftButton
+    none = Qt.MouseButton.NoButton
+    viewport.mousePressEvent(_ev(QMouseEvent.Type.MouseButtonPress, start, left))
+    viewport.mouseMoveEvent(_ev(QMouseEvent.Type.MouseMove, end, none))
+    viewport.mouseReleaseEvent(_ev(QMouseEvent.Type.MouseButtonRelease, end, left))
+
+
+def test_drag_left_to_right_picks_only_contained_entities(viewport: Viewport) -> None:
+    inside = GeometryEntity(
+        segments=[
+            LineSegment(start=(2, 2), end=(8, 2)),
+            LineSegment(start=(8, 2), end=(8, 8)),
+            LineSegment(start=(8, 8), end=(2, 8)),
+            LineSegment(start=(2, 8), end=(2, 2)),
+        ],
+        closed=True,
+    )
+    crossing_only = GeometryEntity(
+        segments=[LineSegment(start=(-50, 5), end=(50, 5))]
+    )
+    viewport.set_layers(
+        [GeometryLayer(name="L", entities=[inside, crossing_only])]
+    )
+    viewport.fit_to_view()
+
+    p1 = viewport.world_to_widget(0, 10)   # top-left of box (world y=10 → smaller widget y)
+    p2 = viewport.world_to_widget(10, 0)   # bottom-right (L→R drag)
+    _drive_drag(viewport, p1, p2)
+    assert viewport.selection == [("L", inside.id)]
+
+
+def test_drag_right_to_left_picks_crossing_entities(viewport: Viewport) -> None:
+    inside = GeometryEntity(
+        segments=[
+            LineSegment(start=(2, 2), end=(8, 2)),
+            LineSegment(start=(8, 2), end=(8, 8)),
+            LineSegment(start=(8, 8), end=(2, 8)),
+            LineSegment(start=(2, 8), end=(2, 2)),
+        ],
+        closed=True,
+    )
+    crossing_only = GeometryEntity(
+        segments=[LineSegment(start=(-50, 5), end=(50, 5))]
+    )
+    viewport.set_layers(
+        [GeometryLayer(name="L", entities=[inside, crossing_only])]
+    )
+    viewport.fit_to_view()
+
+    p1 = viewport.world_to_widget(10, 10)  # top-right
+    p2 = viewport.world_to_widget(0, 0)    # bottom-left (R→L drag)
+    _drive_drag(viewport, p1, p2)
+    assert {pair[1] for pair in viewport.selection} == {inside.id, crossing_only.id}
+
+
+def test_short_left_press_is_treated_as_click_not_drag(viewport: Viewport) -> None:
+    line = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(100, 0))])
+    viewport.set_layers([GeometryLayer(name="L", entities=[line])])
+    viewport.fit_to_view()
+
+    p = viewport.world_to_widget(50, 0)
+    # Move only 1 px — under DRAG_THRESHOLD_PX, so still a click.
+    _drive_drag(viewport, p, QPointF(p.x() + 1, p.y()))
+    assert viewport.selection == [("L", line.id)]
+
+
+def test_click_on_empty_space_clears_selection(viewport: Viewport) -> None:
+    entity = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
+    viewport.set_layers([GeometryLayer(name="L", entities=[entity])])
+    viewport.set_selection([("L", entity.id)])
+
+    # Click far from any geometry.
+    p = viewport.world_to_widget(500, 500)
+    _drive_drag(viewport, p, p)
+    assert viewport.selection == []
 
 
 def test_distance_to_arc_handles_angles_outside_sweep() -> None:

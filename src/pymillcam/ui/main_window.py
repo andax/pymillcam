@@ -124,9 +124,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._viewport)
 
     def _build_tree_dock(self) -> None:
+        from PySide6.QtWidgets import QAbstractItemView
+
         tree = QTreeWidget()
         tree.setHeaderLabels(["Layers & Operations"])
         tree.setObjectName("tree")
+        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
 
         dock = QDockWidget("Layers & Operations", self)
@@ -284,9 +287,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_action_state(self) -> None:
         self._action_generate_gcode.setEnabled(bool(self._project.operations))
-        # "Add Profile" enables only when a geometry entity is selected.
-        layer, entity_id = self._viewport.selected
-        self._action_add_profile.setEnabled(bool(layer and entity_id))
+        # "Add Profile" enables when at least one geometry entity is selected.
+        self._action_add_profile.setEnabled(bool(self._viewport.selection))
         self._action_delete_operation.setEnabled(
             self._currently_selected_operation() is not None
         )
@@ -416,29 +418,28 @@ class MainWindow(QMainWindow):
         # previous one — they belong to that op's history, not the next one's.
         self._commit_pending_edit()
         items = self._tree.selectedItems()
-        if not items:
-            self._viewport.set_selected(None, None)
-            self._properties.set_operation(None)
-            self._viewport.clear_profile_preview()
-            self._edit_snapshot = None
-            self._refresh_action_state()
-            return
-        ref: _TreeRef = items[0].data(0, Qt.ItemDataRole.UserRole)
-        if ref and ref[0] == "entity":
-            _, layer_name, entity_id = ref
-            self._viewport.set_selected(layer_name, entity_id)
-            self._properties.set_operation(None)
-            self._viewport.clear_profile_preview()
-            self._edit_snapshot = None
-        elif ref and ref[0] == "operation":
-            op = self._find_operation(ref[1])
-            self._viewport.set_selected(None, None)
-            self._properties.set_operation(op, self._tool_controller_for(op) if op else None)
+        entity_pairs: list[tuple[str, str]] = []
+        op_ids: list[str] = []
+        for item in items:
+            ref: _TreeRef = item.data(0, Qt.ItemDataRole.UserRole)
+            if not ref:
+                continue
+            if ref[0] == "entity":
+                entity_pairs.append((ref[1], ref[2]))
+            elif ref[0] == "operation":
+                op_ids.append(ref[1])
+
+        self._viewport.set_selection(entity_pairs)
+
+        # Properties + preview only when exactly one operation is selected.
+        if len(op_ids) == 1 and not entity_pairs:
+            op = self._find_operation(op_ids[0])
+            self._properties.set_operation(
+                op, self._tool_controller_for(op) if op else None
+            )
             self._update_profile_preview(op)
-            # Any subsequent property edit will be coalesced against this snapshot.
             self._edit_snapshot = self._project.model_dump(mode="json")
         else:
-            self._viewport.set_selected(None, None)
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
             self._edit_snapshot = None
@@ -463,17 +464,22 @@ class MainWindow(QMainWindow):
         )
 
     def _on_viewport_selection_changed(
-        self, layer_name: str | None, entity_id: str | None
+        self, items: list[tuple[str, str]]
     ) -> None:
         self._syncing_selection = True
         try:
             self._tree.clearSelection()
-            if layer_name and entity_id:
-                item = self._find_entity_item(layer_name, entity_id)
-                if item is not None:
-                    item.setSelected(True)
-                    self._tree.scrollToItem(item)
+            for layer_name, entity_id in items:
+                tree_item = self._find_entity_item(layer_name, entity_id)
+                if tree_item is not None:
+                    tree_item.setSelected(True)
+            if items:
+                last = self._find_entity_item(*items[-1])
+                if last is not None:
+                    self._tree.scrollToItem(last)
             self._properties.set_operation(None)
+            self._viewport.clear_profile_preview()
+            self._edit_snapshot = None
         finally:
             self._syncing_selection = False
         self._refresh_action_state()
@@ -502,27 +508,31 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------- operations
 
     def _on_add_profile(self) -> None:
-        layer_name, entity_id = self._viewport.selected
-        if not layer_name or not entity_id:
+        targets = list(self._viewport.selection)
+        if not targets:
             return
-        new_op_id: dict[str, str] = {}
+        new_op_ids: list[str] = []
+        description = "Add Profile" if len(targets) == 1 else f"Add {len(targets)} Profiles"
 
         def mutate(project: Project) -> None:
+            # All entities in one batch share one ToolController — typical CAM
+            # intent is "cut these contours with the same tool".
             tc = self._create_tool_controller_for(project)
             project.tool_controllers.append(tc)
-            op = ProfileOp(
-                name=f"Profile {len(project.operations) + 1}",
-                tool_controller_id=tc.tool_number,
-                cut_depth=-3.0,
-                offset_side=OffsetSide.OUTSIDE,
-                geometry_refs=[GeometryRef(layer_name=layer_name, entity_id=entity_id)],
-            )
-            project.operations.append(op)
-            new_op_id["id"] = op.id
+            for layer_name, entity_id in targets:
+                op = ProfileOp(
+                    name=f"Profile {len(project.operations) + 1}",
+                    tool_controller_id=tc.tool_number,
+                    cut_depth=-3.0,
+                    offset_side=OffsetSide.OUTSIDE,
+                    geometry_refs=[GeometryRef(layer_name=layer_name, entity_id=entity_id)],
+                )
+                project.operations.append(op)
+                new_op_ids.append(op.id)
 
-        self._do_action("Add Profile", mutate)
-        if "id" in new_op_id:
-            self._select_operation_in_tree(new_op_id["id"])
+        self._do_action(description, mutate)
+        if len(new_op_ids) == 1:
+            self._select_operation_in_tree(new_op_ids[0])
 
     def _on_delete_operation(self) -> None:
         op = self._currently_selected_operation()

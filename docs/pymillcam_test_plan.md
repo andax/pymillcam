@@ -28,8 +28,9 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_ui/test_properties_panel.py` | ~9 | Empty placeholder, populate from op, edit→model+signal, multi-pass / chord-override toggles, populate-doesn't-re-emit, tool diameter disabled w/o controller, tool diameter writes back to controller |
 | `tests/test_engine/test_ir_walker.py` | ~5 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion instructions skipped |
 | `tests/test_core/test_commands.py` | ~8 | Empty stack, push→undo→redo round-trip, new-push clears redo, multi-step done/undone math, clear, no-op push dropped, descriptions track top |
+| `tests/test_ui/test_box_selection.py` | ~9 | direction_from_drag, contained vs crossing matching, inverted box normalisation, arc/point handling, invisible layer skip, empty layer list |
 
-**Totals: ~165 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~179 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -153,13 +154,19 @@ Implemented as a snapshot-based stack: each entry holds `(description, before_di
   - [ ] Pressing Ctrl+Z while typing in a field reverts to the bind-time snapshot rather than partial keystrokes.
   - [ ] Loading a project (File > Open Project) clears Edit menu's undo/redo state.
 
-### Step 7 — Directional box selection  ⬜
+### Step 7 — Directional box selection  ✅
 
-- A: Selection logic given a bounding box and a list of entities returns the right set for L→R (contained) vs R→L (crossing) modes — independent of the UI.
-- M-V:
-  - [ ] Drag left-to-right → green rectangle, selects only entities fully inside.
-  - [ ] Drag right-to-left → blue (or different color) rectangle, selects entities touched by the box.
-  - [ ] Visual feedback during drag matches final selection.
+- A: `tests/test_ui/test_box_selection.py` — pure `select_in_box` matches CONTAINED vs CROSSING semantics for lines, arcs, and points; handles inverted rect, invisible layers, empty input.
+- A: `tests/test_ui/test_viewport.py` — drag L→R picks only contained entities; drag R→L picks crossing; sub-threshold movement still treated as a click; click on empty space clears selection.
+- The viewport's selection model is now a list of `(layer_name, entity_id)` pairs; the layers/operations tree uses ExtendedSelection so Ctrl-clicking and box-selection both produce multi-select.
+- Add Profile creates one ProfileOp per selected entity in a single batch, all sharing one fresh ToolController — undoable in one step.
+- **M-V to do**:
+  - [ ] Drag left → right paints a green solid-outline rectangle; release selects only entities fully inside it.
+  - [ ] Drag right → left paints a blue dashed-outline rectangle; release selects everything the box touches.
+  - [ ] Multi-selected entities all draw highlighted in the viewport and all show selected in the tree.
+  - [ ] Ctrl-click in the tree adds/removes entries from the selection.
+  - [ ] Add Profile with multiple entities selected creates one op per entity (all sharing one ToolController); undo removes them all in one step.
+  - [ ] A single quick click anywhere still works as before (single-select or clear).
 
 ### Step 8 — Project save/load as JSON  ✅
 

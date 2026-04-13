@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QWidget
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.segments import ArcSegment, LineSegment, Segment
 from pymillcam.engine.ir_walker import MoveKind, WalkedMove
+from pymillcam.ui.box_selection import BoxMode, direction_from_drag, select_in_box
 
 # Px per mm — chosen so that a ~400 mm part fits comfortably in an 800 px wide
 # viewport before the user touches zoom.
@@ -52,19 +53,25 @@ COLOR_SELECTED = QColor(90, 180, 255)
 COLOR_PROFILE_PREVIEW = QColor(255, 160, 60)
 COLOR_TOOLPATH_FEED = QColor(220, 90, 200)
 COLOR_TOOLPATH_RAPID = QColor(80, 200, 220)
+COLOR_BOX_CONTAINED_FILL = QColor(80, 220, 120, 40)
+COLOR_BOX_CONTAINED_LINE = QColor(80, 220, 120)
+COLOR_BOX_CROSSING_FILL = QColor(80, 160, 240, 40)
+COLOR_BOX_CROSSING_LINE = QColor(80, 160, 240)
 
 # How close (in widget pixels) the click must be to an entity to hit it.
 HIT_TEST_TOLERANCE_PX = 5.0
+# Pixels of mouse movement required before a left-press becomes a drag.
+DRAG_THRESHOLD_PX = 4.0
 
 
 class Viewport(QWidget):
     """Pan/zoom/draw widget. Owns rendering state but no geometry model."""
 
     mouse_position_changed = Signal(float, float)
-    # Emitted when the user clicks in the viewport. Either both arguments are
-    # strings identifying the (layer_name, entity_id), or both are None to
-    # indicate a click on empty space that cleared the selection.
-    selection_changed = Signal(object, object)
+    # Emitted whenever the user changes the selection through the viewport.
+    # Payload is the new selection: a list of (layer_name, entity_id) tuples,
+    # possibly empty.
+    selection_changed = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,8 +82,12 @@ class Viewport(QWidget):
         self._panning = False
         self._pan_start_widget: QPoint = QPoint()
         self._pan_start_origin: QPointF = QPointF()
-        self._selected_layer: str | None = None
-        self._selected_entity: str | None = None
+        self._selection: list[tuple[str, str]] = []
+        # Drag-to-box-select state (left button only; differentiated from a
+        # click by `DRAG_THRESHOLD_PX` of movement).
+        self._left_press_widget: QPointF | None = None
+        self._dragging_box = False
+        self._drag_current_widget: QPointF | None = None
         self._profile_preview: list[Segment] = []
         self._toolpath_preview: list[WalkedMove] = []
         self._show_profile_preview = True
@@ -88,16 +99,17 @@ class Viewport(QWidget):
 
     def set_layers(self, layers: list[GeometryLayer]) -> None:
         self._layers = list(layers)
-        # An entity the caller was pointing at may have gone away.
-        if not self._find_entity(self._selected_layer, self._selected_entity):
-            self._selected_layer = None
-            self._selected_entity = None
+        # Drop any selected entity that's no longer in the project.
+        self._selection = [
+            (layer, entity_id)
+            for layer, entity_id in self._selection
+            if self._has_entity(layer, entity_id)
+        ]
         self.update()
 
-    def set_selected(self, layer_name: str | None, entity_id: str | None) -> None:
-        """Programmatic selection change. Does not emit `selection_changed`."""
-        self._selected_layer = layer_name
-        self._selected_entity = entity_id
+    def set_selection(self, items: list[tuple[str, str]]) -> None:
+        """Programmatic selection change. Does NOT emit `selection_changed`."""
+        self._selection = list(items)
         self.update()
 
     def set_profile_preview(self, segments: list[Segment]) -> None:
@@ -125,12 +137,10 @@ class Viewport(QWidget):
         self.update()
 
     @property
-    def selected(self) -> tuple[str | None, str | None]:
-        return (self._selected_layer, self._selected_entity)
+    def selection(self) -> list[tuple[str, str]]:
+        return list(self._selection)
 
-    def _find_entity(self, layer_name: str | None, entity_id: str | None) -> bool:
-        if not layer_name or not entity_id:
-            return False
+    def _has_entity(self, layer_name: str, entity_id: str) -> bool:
         for layer in self._layers:
             if layer.name != layer_name:
                 continue
@@ -240,6 +250,8 @@ class Viewport(QWidget):
                 self._draw_toolpath_preview(painter)
             if self._show_profile_preview and self._profile_preview:
                 self._draw_profile_preview(painter)
+            if self._dragging_box:
+                self._draw_drag_box(painter)
         finally:
             painter.end()
 
@@ -313,24 +325,21 @@ class Viewport(QWidget):
     def _draw_geometry(self, painter: QPainter) -> None:
         default_pen = QPen(COLOR_GEOMETRY, 1.4)
         selected_pen = QPen(COLOR_SELECTED, 2.2)
-        selected_entity = None
+        selected_set = set(self._selection)
+        deferred: list[GeometryEntity] = []
         for layer in self._layers:
             if not layer.visible:
                 continue
             for entity in layer.entities:
-                is_selected = (
-                    layer.name == self._selected_layer
-                    and entity.id == self._selected_entity
-                )
-                if is_selected:
-                    # Draw selected entity last so it sits on top.
-                    selected_entity = (layer, entity)
+                if (layer.name, entity.id) in selected_set:
+                    # Draw selected entities last so they sit on top.
+                    deferred.append(entity)
                     continue
                 painter.setPen(default_pen)
                 self._draw_entity(painter, entity)
-        if selected_entity is not None:
-            painter.setPen(selected_pen)
-            self._draw_entity(painter, selected_entity[1])
+        painter.setPen(selected_pen)
+        for entity in deferred:
+            self._draw_entity(painter, entity)
 
     def _draw_entity(self, painter: QPainter, entity: GeometryEntity) -> None:
         if entity.point is not None:
@@ -358,6 +367,29 @@ class Viewport(QWidget):
         for move in self._toolpath_preview:
             painter.setPen(feed_pen if move.kind is MoveKind.FEED else rapid_pen)
             self._draw_segment(painter, move.segment)
+
+    def _draw_drag_box(self, painter: QPainter) -> None:
+        if self._left_press_widget is None or self._drag_current_widget is None:
+            return
+        start = self._left_press_widget
+        end = self._drag_current_widget
+        mode = direction_from_drag(start.x(), end.x())
+        line_color = (
+            COLOR_BOX_CONTAINED_LINE if mode is BoxMode.CONTAINED else COLOR_BOX_CROSSING_LINE
+        )
+        fill_color = (
+            COLOR_BOX_CONTAINED_FILL if mode is BoxMode.CONTAINED else COLOR_BOX_CROSSING_FILL
+        )
+        rect = QRectF(start, end).normalized()
+        # Crossing mode uses a dashed outline so the direction is unambiguous
+        # even for colourblind users.
+        pen_style = (
+            Qt.PenStyle.SolidLine if mode is BoxMode.CONTAINED else Qt.PenStyle.DashLine
+        )
+        painter.setPen(QPen(line_color, 1.2, pen_style))
+        painter.setBrush(fill_color)
+        painter.drawRect(rect)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_segment(self, painter: QPainter, seg: LineSegment | ArcSegment) -> None:
         if isinstance(seg, LineSegment):
@@ -400,10 +432,10 @@ class Viewport(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            world = self.widget_to_world(event.position())
-            hit = self._hit_test(world)
-            self.set_selected(*hit)
-            self.selection_changed.emit(*hit)
+            # Defer click vs drag decision until release / movement.
+            self._left_press_widget = QPointF(event.position())
+            self._dragging_box = False
+            self._drag_current_widget = None
             event.accept()
             return
         super().mousePressEvent(event)
@@ -417,6 +449,13 @@ class Viewport(QWidget):
                 self._pan_start_origin.y() + delta.y(),
             )
             self.update()
+        if self._left_press_widget is not None:
+            dx = pos.x() - self._left_press_widget.x()
+            dy = pos.y() - self._left_press_widget.y()
+            if self._dragging_box or math.hypot(dx, dy) >= DRAG_THRESHOLD_PX:
+                self._dragging_box = True
+                self._drag_current_widget = QPointF(pos)
+                self.update()
         x, y = self.widget_to_world(pos)
         self.mouse_position_changed.emit(x, y)
 
@@ -426,7 +465,38 @@ class Viewport(QWidget):
             self.unsetCursor()
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton and self._left_press_widget is not None:
+            if self._dragging_box and self._drag_current_widget is not None:
+                self._finish_box_select(self._left_press_widget, self._drag_current_widget)
+            else:
+                world = self.widget_to_world(event.position())
+                hit_layer, hit_id = self._hit_test(world)
+                items: list[tuple[str, str]] = (
+                    [(hit_layer, hit_id)] if hit_layer and hit_id else []
+                )
+                self.set_selection(items)
+                self.selection_changed.emit(items)
+            self._left_press_widget = None
+            self._dragging_box = False
+            self._drag_current_widget = None
+            self.update()
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
+
+    def _finish_box_select(self, start: QPointF, end: QPointF) -> None:
+        start_world = self.widget_to_world(start)
+        end_world = self.widget_to_world(end)
+        mode = direction_from_drag(start.x(), end.x())
+        box = (
+            min(start_world[0], end_world[0]),
+            min(start_world[1], end_world[1]),
+            max(start_world[0], end_world[0]),
+            max(start_world[1], end_world[1]),
+        )
+        items = select_in_box(self._layers, box, mode)
+        self.set_selection(items)
+        self.selection_changed.emit(items)
 
 
 def _grid_spacings(scale_px_per_mm: float) -> tuple[float, float]:

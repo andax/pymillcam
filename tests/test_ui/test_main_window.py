@@ -158,10 +158,10 @@ def test_tree_selection_drives_viewport_highlight(main_window: MainWindow) -> No
     assert entity_item is not None
 
     entity_item.setSelected(True)
-    assert main_window._viewport.selected == ("L", entity.id)
+    assert main_window._viewport.selection == [("L", entity.id)]
 
     main_window._tree.clearSelection()
-    assert main_window._viewport.selected == (None, None)
+    assert main_window._viewport.selection == []
 
 
 def test_viewport_selection_drives_tree_highlight(main_window: MainWindow) -> None:
@@ -172,7 +172,7 @@ def test_viewport_selection_drives_tree_highlight(main_window: MainWindow) -> No
     layer = GeometryLayer(name="L", entities=[entity])
     main_window.set_project(Project(geometry_layers=[layer]))
 
-    main_window._viewport.selection_changed.emit("L", entity.id)
+    main_window._viewport.selection_changed.emit([("L", entity.id)])
     selected_items = main_window._tree.selectedItems()
     assert len(selected_items) == 1
     ref = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
@@ -185,9 +185,9 @@ def test_viewport_clearing_selection_clears_tree(main_window: MainWindow) -> Non
     )
     layer = GeometryLayer(name="L", entities=[entity])
     main_window.set_project(Project(geometry_layers=[layer]))
-    main_window._viewport.selection_changed.emit("L", entity.id)
+    main_window._viewport.selection_changed.emit([("L", entity.id)])
 
-    main_window._viewport.selection_changed.emit(None, None)
+    main_window._viewport.selection_changed.emit([])
     assert main_window._tree.selectedItems() == []
 
 
@@ -205,9 +205,10 @@ def _project_with_one_circle() -> tuple[Project, GeometryEntity]:
 def _simulate_viewport_click(
     main_window: MainWindow, layer_name: str, entity_id: str
 ) -> None:
-    """Replay what Viewport.mousePressEvent does on a hit — state + signal."""
-    main_window._viewport.set_selected(layer_name, entity_id)
-    main_window._viewport.selection_changed.emit(layer_name, entity_id)
+    """Replay what Viewport.mouseReleaseEvent does on a single-entity hit."""
+    items = [(layer_name, entity_id)]
+    main_window._viewport.set_selection(items)
+    main_window._viewport.selection_changed.emit(items)
 
 
 def test_add_profile_requires_selected_entity(main_window: MainWindow) -> None:
