@@ -66,7 +66,7 @@ Transforms IR → G-code for specific controllers.
 - Pydantic for data models
 - numpy for numeric computation
 
-## Development Phase (Current: Phase 1)
+## Development Phase (Phase 1 complete; Phase 2 next)
 Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-code.
 1. ✅ Core Pydantic data models
 2. ✅ DXF import (arcs preserved as ArcSegments, including LWPOLYLINE bulges)
@@ -76,6 +76,9 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
 6. ✅ Undo/redo command infrastructure (snapshot-based stack, Ctrl+Z / Ctrl+Shift+Z, coalesced property edits)
 7. ✅ Directional box selection (L→R window, R→L crossing, multi-select)
 8. ✅ Project save/load as JSON
+
+`ProjectSettings.chord_tolerance` defaults to 0.02 mm (was 0.05 in early
+Phase 1). Per-op override via the Properties panel.
 
 ### Known limitations to revisit
 - `engine/profile.py::_offset_contour` still routes inside/outside offsets
@@ -90,6 +93,17 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
   of one. Polyline-authored DXFs (`LWPOLYLINE`/`POLYLINE`) already arrive
   as single contours. Future fix: a "Join paths" action and/or an opt-in
   on-import endpoint-stitch pass.
+- No shared Tool Library yet. Each `Add Profile` creates a fresh
+  `ToolController` for the new op (or for the batch if multiple entities
+  are selected). Editing diameter in Properties only affects that op's
+  controller. Phase 2 should add a Tool Library dock and let ops point
+  at library entries instead.
+- Properties panel only knows `ProfileOp`. As Pocket / Drill / Engrave
+  land, swap the single form widget for a stack indexed by op type
+  (already noted in `properties_panel.py`).
+- Property-edit coalescing window is a hardcoded 400 ms in
+  `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
+  users find it laggy or jumpy.
 
 ## Code Style
 - Type hints everywhere
