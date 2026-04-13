@@ -23,9 +23,10 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_io/test_project_io.py` | ~8 | Save/load round-trip, string vs Path, pretty vs compact, error paths |
 | `tests/test_engine/test_profile.py` | ~20 | Z-level computation, inside/outside/on-line offsets, stepdown cascade, arc IR emission (CW/CCW), chord_tolerance cascade |
 | `tests/test_post/test_uccnc.py` | ~18 | Individual G-code translations, feed-rate modality, coordinate formatting, end-to-end DXF → G-code with arcs preserved |
-| `tests/test_ui/test_main_window.py` | ~7 | Main window instantiates, menu structure, dock placement, placeholder actions start disabled |
+| `tests/test_ui/test_main_window.py` | ~14 | Main window chrome, status-bar coord readout, DXF load → project/tree/viewport, tree↔viewport selection sync |
+| `tests/test_ui/test_viewport.py` | ~14 | Viewport instantiates, set_layers with mixed content, world↔widget round-trip, Y-up convention, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep |
 
-**Totals: ~101 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~122 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -90,27 +91,35 @@ Mostly manual; automated coverage is limited to signal/slot smoke tests via pyte
   - [ ] Central area shows the viewport placeholder text
   - [ ] View menu can toggle tree and output docks
 
-**Sub-commit 2 — Viewport (the hardest to verify)**
-- A: Viewport widget instantiates; `set_layers(list[GeometryLayer])` doesn't crash with mixed line/arc content.
-- M-V checklist:
-  - [ ] A 50 mm circle in a DXF renders as a smooth circle (not a visible polygon).
-  - [ ] Y-axis points up (CAD convention), not down (screen convention).
-  - [ ] Grid lines at sensible spacing (e.g. 10 mm major, 1 mm minor at normal zoom).
-  - [ ] Origin marker visible.
-  - [ ] Mouse-wheel zoom centers on the cursor, not the widget center.
-  - [ ] Middle-mouse drag pans without inertia / jitter.
-  - [ ] Fit-to-view action (keyboard shortcut, e.g. `F`) frames all loaded geometry.
-  - [ ] Coordinate readout (mouse X/Y in mm) updates in the status bar.
+**Sub-commit 2 — Viewport (the hardest to verify)**  ✅
+- A: `tests/test_ui/test_viewport.py` — instantiation, mixed line/arc `set_layers`, world↔widget transform, Y-up invariant, `fit_to_view` centring, wheel-zoom preserves cursor world point, grid-spacing heuristic, `mouse_position_changed` signal fires.
+- Implementation note: arcs render via `QPainter.drawArc` (vector primitive), so they stay smooth at any zoom without needing run-time discretization.
+- **M-V to do** (human verification — run `uv run pymillcam`, load a DXF):
+  - [ ] A 50 mm circle renders as a smooth circle (not a visible polygon), even when zoomed way in.
+  - [ ] Y-axis points up (CAD convention): world (0, 10) appears above world (0, 0).
+  - [ ] Red X-axis and green Y-axis are visible and cross at the origin marker.
+  - [ ] Grid lines at sensible spacing — spacing adapts as you zoom.
+  - [ ] Mouse-wheel zoom centres on the cursor, not the widget centre.
+  - [ ] Middle-mouse drag pans without jitter.
+  - [ ] Pressing `F` frames all loaded geometry with a small margin.
+  - [ ] Status bar coordinate readout (`X: …  Y: …`) updates as the mouse moves.
   - [ ] No visible lag panning/zooming a DXF with 1k+ entities.
-  - [ ] Arcs don't facet visibly even when zoomed way in (discretize-on-draw with adaptive tolerance).
 
-**Sub-commit 3 — Tree + DXF import action**
-- A: Tree populated from a Project shows expected node counts.
-- M-V:
+**Sub-commit 3 — Tree + DXF import action**  ✅
+- A: `tests/test_ui/test_main_window.py` — DXF load populates project, tree, viewport; tree node counts match layer entity counts; tree↔viewport selection round-trips both ways without recursion.
+- A: `tests/test_ui/test_viewport.py` — `_hit_test` picks nearest entity within tolerance, `set_selected` doesn't re-emit, stale selection is dropped on `set_layers`.
+- **M-V to do**:
   - [ ] File > Open DXF... opens a dialog, accepts a .dxf file, and populates the viewport + tree.
-  - [ ] Tree shows layers as top-level nodes, entities nested under them.
-  - [ ] Selecting a tree node highlights the corresponding geometry in the viewport.
-  - [ ] Selecting in the viewport highlights the corresponding tree node.
+  - [ ] Tree shows layers as top-level nodes (with entity counts), entities nested under them.
+  - [ ] Selecting a tree entity highlights the corresponding geometry in the viewport (bright cyan, drawn on top).
+  - [ ] Left-clicking near an entity in the viewport highlights it AND selects its tree node.
+  - [ ] Left-clicking on empty space clears both selections.
+  - [ ] Importing a second DXF replaces the first (single-project semantics).
+- **Known gap (out of sub-commit 3 scope, future feature):** DXFs whose
+  contours are authored as separate `LINE` entities import as one
+  `GeometryEntity` per line. We need a "Join paths" action (and possibly
+  an opt-in stitch-on-import) before such DXFs can be profiled with one
+  selection. Users with `LWPOLYLINE`/`POLYLINE` DXFs are unaffected.
 
 **Sub-commit 4 — Selection + profile op + G-code output**
 - A: "Add Profile" action constructs a ProfileOp with expected defaults.

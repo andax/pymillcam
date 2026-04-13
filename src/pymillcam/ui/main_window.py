@@ -1,21 +1,37 @@
-"""Main application window shell.
+"""Main application window.
 
-This sub-commit lands only the chrome: menus, dock layout, and placeholder
-panels. The viewport, tree, and G-code output pane are filled in by later
-sub-commits of Phase 1 step 5.
+Chrome + viewport + layers/operations tree. File > Open DXF imports a
+drawing into the current project; the tree and viewport stay in sync
+(clicking an entity in one highlights it in the other). G-code output,
+"Add Profile", and Save/Load wiring arrive in sub-commit 4.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
+    QFileDialog,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QTreeWidget,
+    QTreeWidgetItem,
     QWidget,
 )
+
+from pymillcam.core.geometry import GeometryLayer
+from pymillcam.core.project import Project
+from pymillcam.io.dxf_import import DxfImportError, import_dxf
+from pymillcam.ui.viewport import Viewport
+
+# Qt.ItemDataRole.UserRole stores a tuple describing what a tree item maps to:
+#   ("layer", layer_name)                   — layer header row
+#   ("entity", layer_name, entity_id)       — leaf entity row
+_TreeRef = tuple[str, ...]
 
 
 class MainWindow(QMainWindow):
@@ -27,10 +43,18 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._apply_dock_styling()
 
-        self._build_central_placeholder()
+        self._project = Project()
+        self._syncing_selection = False
+
+        self._build_viewport()
         self._build_tree_dock()
         self._build_output_dock()
         self._build_menus()
+        self._build_status_bar()
+
+    @property
+    def project(self) -> Project:
+        return self._project
 
     def _apply_dock_styling(self) -> None:
         # Qt's default dock chrome blends into QPalette.Window on several Linux
@@ -57,16 +81,17 @@ class MainWindow(QMainWindow):
             """
         )
 
-    def _build_central_placeholder(self) -> None:
-        placeholder = QLabel("Viewport (coming in sub-commit 2)")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setObjectName("viewport_placeholder")
-        self.setCentralWidget(placeholder)
+    def _build_viewport(self) -> None:
+        self._viewport = Viewport(self)
+        self._viewport.setObjectName("viewport")
+        self._viewport.selection_changed.connect(self._on_viewport_selection_changed)
+        self.setCentralWidget(self._viewport)
 
     def _build_tree_dock(self) -> None:
         tree = QTreeWidget()
         tree.setHeaderLabels(["Layers & Operations"])
         tree.setObjectName("tree")
+        tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
 
         dock = QDockWidget("Layers & Operations", self)
         dock.setObjectName("tree_dock")
@@ -102,6 +127,7 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("&File")
         self._action_open_dxf = QAction("&Open DXF...", self)
         self._action_open_dxf.setShortcut(QKeySequence.StandardKey.Open)
+        self._action_open_dxf.triggered.connect(self._on_open_dxf)
         self._action_open_project = QAction("Open &Project...", self)
         self._action_save = QAction("&Save", self)
         self._action_save.setShortcut(QKeySequence.StandardKey.Save)
@@ -132,7 +158,7 @@ class MainWindow(QMainWindow):
         view_menu = menu_bar.addMenu("&View")
         self._action_fit = QAction("&Fit to View", self)
         self._action_fit.setShortcut("F")
-        self._action_fit.setEnabled(False)
+        self._action_fit.triggered.connect(self._viewport.fit_to_view)
         view_menu.addAction(self._action_fit)
         view_menu.addSeparator()
         view_menu.addAction(self._tree_dock.toggleViewAction())
@@ -146,3 +172,118 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_add_profile)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_generate_gcode)
+
+    def _build_status_bar(self) -> None:
+        self._coord_label = QLabel("X: —   Y: —")
+        self._coord_label.setObjectName("coord_label")
+        self._coord_label.setMinimumWidth(160)
+        self.statusBar().addPermanentWidget(self._coord_label)
+        self._viewport.mouse_position_changed.connect(self._on_mouse_position_changed)
+
+    def _on_mouse_position_changed(self, x: float, y: float) -> None:
+        self._coord_label.setText(f"X: {x:8.3f}   Y: {y:8.3f}")
+
+    # -------------------------------------------------------------- project
+
+    def set_project(self, project: Project) -> None:
+        self._project = project
+        self._viewport.set_layers(project.geometry_layers)
+        self._rebuild_tree()
+        self._viewport.fit_to_view()
+
+    def _rebuild_tree(self) -> None:
+        self._tree.blockSignals(True)
+        try:
+            self._tree.clear()
+            for layer in self._project.geometry_layers:
+                layer_item = QTreeWidgetItem(
+                    [f"{layer.name} ({len(layer.entities)})"]
+                )
+                layer_item.setData(0, Qt.ItemDataRole.UserRole, ("layer", layer.name))
+                for entity in layer.entities:
+                    label = entity.dxf_entity_type or (
+                        "POINT" if entity.point is not None else "CONTOUR"
+                    )
+                    entity_item = QTreeWidgetItem([label])
+                    entity_item.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        ("entity", layer.name, entity.id),
+                    )
+                    layer_item.addChild(entity_item)
+                self._tree.addTopLevelItem(layer_item)
+                layer_item.setExpanded(True)
+        finally:
+            self._tree.blockSignals(False)
+
+    # -------------------------------------------------------------- DXF I/O
+
+    def _on_open_dxf(self) -> None:
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Open DXF", "", "DXF files (*.dxf);;All files (*)"
+        )
+        if not path_str:
+            return
+        self.load_dxf(Path(path_str))
+
+    def load_dxf(self, path: Path) -> None:
+        """Import a DXF from disk and install its layers into a fresh project."""
+        try:
+            layers: list[GeometryLayer] = import_dxf(path)
+        except DxfImportError as exc:
+            QMessageBox.critical(self, "DXF import failed", str(exc))
+            return
+        project = Project(name=path.stem, geometry_layers=layers)
+        self.set_project(project)
+        self.statusBar().showMessage(f"Imported {path.name}", 5000)
+
+    # ----------------------------------------------------------- selection
+
+    def _on_tree_selection_changed(self) -> None:
+        if self._syncing_selection:
+            return
+        items = self._tree.selectedItems()
+        if not items:
+            self._viewport.set_selected(None, None)
+            return
+        ref: _TreeRef = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if ref and ref[0] == "entity":
+            _, layer_name, entity_id = ref
+            self._viewport.set_selected(layer_name, entity_id)
+        else:
+            self._viewport.set_selected(None, None)
+
+    def _on_viewport_selection_changed(
+        self, layer_name: str | None, entity_id: str | None
+    ) -> None:
+        self._syncing_selection = True
+        try:
+            self._tree.clearSelection()
+            if layer_name and entity_id:
+                item = self._find_entity_item(layer_name, entity_id)
+                if item is not None:
+                    item.setSelected(True)
+                    self._tree.scrollToItem(item)
+        finally:
+            self._syncing_selection = False
+
+    def _find_entity_item(
+        self, layer_name: str, entity_id: str
+    ) -> QTreeWidgetItem | None:
+        for i in range(self._tree.topLevelItemCount()):
+            layer_item = self._tree.topLevelItem(i)
+            if layer_item is None:
+                continue
+            for j in range(layer_item.childCount()):
+                child = layer_item.child(j)
+                if child is None:
+                    continue
+                ref: _TreeRef = child.data(0, Qt.ItemDataRole.UserRole)
+                if (
+                    ref
+                    and ref[0] == "entity"
+                    and ref[1] == layer_name
+                    and ref[2] == entity_id
+                ):
+                    return child
+        return None

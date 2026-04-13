@@ -85,6 +85,11 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
   arcs end-to-end.
 - Machine macros (program_start / program_end / tool_change) are defined
   on `MachineDefinition` but not yet consumed by the post-processor.
+- DXFs authored as separate `LINE` entities import as one `GeometryEntity`
+  per LINE, so a four-sided shape becomes four selectable contours instead
+  of one. Polyline-authored DXFs (`LWPOLYLINE`/`POLYLINE`) already arrive
+  as single contours. Future fix: a "Join paths" action and/or an opt-in
+  on-import endpoint-stitch pass.
 
 ## Code Style
 - Type hints everywhere
