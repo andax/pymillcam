@@ -22,6 +22,46 @@ class BoxMode(StrEnum):
     CROSSING = "crossing"
 
 
+class SelectionCombine(StrEnum):
+    """How a new pick should combine with the existing selection."""
+    REPLACE = "replace"
+    ADD = "add"
+    TOGGLE = "toggle"
+
+
+def combine_selection(
+    current: list[tuple[str, str]],
+    picked: list[tuple[str, str]],
+    mode: SelectionCombine,
+) -> list[tuple[str, str]]:
+    """Apply a new pick to a current selection per `mode`.
+
+    Order preserved: existing entries stay in place; new ones append at the
+    end. Toggle mode removes anything in both lists (XOR semantics) — useful
+    for Ctrl+click to deselect.
+    """
+    if mode is SelectionCombine.REPLACE:
+        return list(picked)
+    if mode is SelectionCombine.ADD:
+        seen = set(current)
+        out = list(current)
+        for item in picked:
+            if item not in seen:
+                out.append(item)
+                seen.add(item)
+        return out
+    # TOGGLE — XOR of current and picked.
+    picked_set = set(picked)
+    out = [c for c in current if c not in picked_set]
+    out_set = set(out)
+    current_set = set(current)
+    for item in picked:
+        if item not in current_set and item not in out_set:
+            out.append(item)
+            out_set.add(item)
+    return out
+
+
 def direction_from_drag(start_x: float, end_x: float) -> BoxMode:
     """L→R drag selects contained; R→L drag selects crossing."""
     return BoxMode.CONTAINED if end_x >= start_x else BoxMode.CROSSING

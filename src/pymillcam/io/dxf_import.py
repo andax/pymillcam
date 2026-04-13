@@ -22,6 +22,7 @@ from ezdxf.entities import Arc, Circle, DXFEntity, Line, LWPolyline, Polyline
 from ezdxf.entities import Point as DxfPoint
 
 from pymillcam.core.geometry import EntitySource, GeometryEntity, GeometryLayer
+from pymillcam.core.path_stitching import stitch_entities
 from pymillcam.core.segments import ArcSegment, LineSegment, Segment
 
 INSUNITS_INCHES = 1
@@ -40,8 +41,17 @@ class _EntityShape:
     point: tuple[float, float] | None = None
 
 
-def import_dxf(path: str | Path) -> list[GeometryLayer]:
-    """Import `path` and return one GeometryLayer per non-empty DXF layer."""
+def import_dxf(
+    path: str | Path,
+    *,
+    stitch_tolerance: float | None = None,
+) -> list[GeometryLayer]:
+    """Import `path` and return one GeometryLayer per non-empty DXF layer.
+
+    If `stitch_tolerance` is set, runs `path_stitching.stitch_entities` per
+    layer with that tolerance — useful for DXFs authored as separate LINE
+    entities. Pass `None` (default) to leave entities as-imported.
+    """
     path = Path(path)
     try:
         doc: Drawing = ezdxf.readfile(str(path))
@@ -76,6 +86,10 @@ def import_dxf(path: str | Path) -> list[GeometryLayer]:
                 dxf_entity_type=dxf_entity.dxftype().lower(),
             )
         )
+
+    if stitch_tolerance is not None:
+        for layer in layers.values():
+            layer.entities = stitch_entities(layer.entities, stitch_tolerance)
 
     return list(layers.values())
 

@@ -28,6 +28,23 @@ def test_missing_file_raises() -> None:
         import_dxf("/nonexistent/path.dxf")
 
 
+def test_stitch_tolerance_welds_separate_lines_into_one_contour(tmp_path: Path) -> None:
+    def build(msp, doc):
+        msp.add_line((0, 0), (10, 0))
+        msp.add_line((10, 0), (10, 10))
+        msp.add_line((10, 10), (0, 10))
+        msp.add_line((0, 10), (0, 0))
+    path = _write_dxf(tmp_path, build)
+    # Without stitching: four separate entities.
+    layers = import_dxf(path)
+    assert len(layers[0].entities) == 4
+    # With stitching: one closed quad.
+    layers = import_dxf(path, stitch_tolerance=0.001)
+    assert len(layers[0].entities) == 1
+    assert layers[0].entities[0].closed is True
+    assert len(layers[0].entities[0].segments) == 4
+
+
 def test_empty_drawing_returns_no_layers(tmp_path: Path) -> None:
     path = _write_dxf(tmp_path, lambda msp, doc: None)
     assert import_dxf(path) == []

@@ -29,7 +29,13 @@ from PySide6.QtWidgets import QWidget
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.segments import ArcSegment, LineSegment, Segment
 from pymillcam.engine.ir_walker import MoveKind, WalkedMove
-from pymillcam.ui.box_selection import BoxMode, direction_from_drag, select_in_box
+from pymillcam.ui.box_selection import (
+    BoxMode,
+    SelectionCombine,
+    combine_selection,
+    direction_from_drag,
+    select_in_box,
+)
 
 # Px per mm — chosen so that a ~400 mm part fits comfortably in an 800 px wide
 # viewport before the user touches zoom.
@@ -466,16 +472,26 @@ class Viewport(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self._left_press_widget is not None:
+            combine = _modifier_combine(event.modifiers())
             if self._dragging_box and self._drag_current_widget is not None:
-                self._finish_box_select(self._left_press_widget, self._drag_current_widget)
+                self._finish_box_select(
+                    self._left_press_widget, self._drag_current_widget, combine
+                )
             else:
                 world = self.widget_to_world(event.position())
                 hit_layer, hit_id = self._hit_test(world)
-                items: list[tuple[str, str]] = (
+                picked: list[tuple[str, str]] = (
                     [(hit_layer, hit_id)] if hit_layer and hit_id else []
                 )
-                self.set_selection(items)
-                self.selection_changed.emit(items)
+                # Empty pick + a modifier means "add nothing / toggle nothing"
+                # — keep the existing selection. A plain click on empty space
+                # still clears, matching CAD convention.
+                if not picked and combine is not SelectionCombine.REPLACE:
+                    pass
+                else:
+                    new_selection = combine_selection(self._selection, picked, combine)
+                    self.set_selection(new_selection)
+                    self.selection_changed.emit(new_selection)
             self._left_press_widget = None
             self._dragging_box = False
             self._drag_current_widget = None
@@ -484,7 +500,9 @@ class Viewport(QWidget):
             return
         super().mouseReleaseEvent(event)
 
-    def _finish_box_select(self, start: QPointF, end: QPointF) -> None:
+    def _finish_box_select(
+        self, start: QPointF, end: QPointF, combine: SelectionCombine
+    ) -> None:
         start_world = self.widget_to_world(start)
         end_world = self.widget_to_world(end)
         mode = direction_from_drag(start.x(), end.x())
@@ -494,9 +512,23 @@ class Viewport(QWidget):
             max(start_world[0], end_world[0]),
             max(start_world[1], end_world[1]),
         )
-        items = select_in_box(self._layers, box, mode)
-        self.set_selection(items)
-        self.selection_changed.emit(items)
+        picked = select_in_box(self._layers, box, mode)
+        new_selection = combine_selection(self._selection, picked, combine)
+        self.set_selection(new_selection)
+        self.selection_changed.emit(new_selection)
+
+
+def _modifier_combine(modifiers: Qt.KeyboardModifier) -> SelectionCombine:
+    """Map Qt keyboard modifiers to a selection-combine mode.
+
+    Ctrl wins over Shift if both are held — toggle is the more useful action
+    when the user is fixing up a selection.
+    """
+    if modifiers & Qt.KeyboardModifier.ControlModifier:
+        return SelectionCombine.TOGGLE
+    if modifiers & Qt.KeyboardModifier.ShiftModifier:
+        return SelectionCombine.ADD
+    return SelectionCombine.REPLACE
 
 
 def _grid_spacings(scale_px_per_mm: float) -> tuple[float, float]:

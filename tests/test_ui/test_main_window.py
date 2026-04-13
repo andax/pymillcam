@@ -423,6 +423,48 @@ def test_undo_during_in_progress_edit_reverts_without_recording(
     assert main_window.project.operations == []
 
 
+def test_join_paths_action_is_disabled_when_fewer_than_two_selected(
+    main_window: MainWindow,
+) -> None:
+    layer = GeometryLayer(
+        name="L",
+        entities=[
+            GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))]),
+            GeometryEntity(segments=[LineSegment(start=(10, 0), end=(10, 10))]),
+        ],
+    )
+    main_window.set_project(Project(geometry_layers=[layer]))
+    assert not main_window._action_join_paths.isEnabled()
+    # Single selection: still disabled.
+    main_window._viewport.set_selection([("L", layer.entities[0].id)])
+    main_window._refresh_action_state()
+    assert not main_window._action_join_paths.isEnabled()
+    # Two selected: enabled.
+    main_window._viewport.set_selection(
+        [("L", layer.entities[0].id), ("L", layer.entities[1].id)]
+    )
+    main_window._refresh_action_state()
+    assert main_window._action_join_paths.isEnabled()
+
+
+def test_join_paths_welds_selected_entities_and_is_undoable(
+    main_window: MainWindow,
+) -> None:
+    e1 = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
+    e2 = GeometryEntity(segments=[LineSegment(start=(10, 0), end=(10, 10))])
+    layer = GeometryLayer(name="L", entities=[e1, e2])
+    main_window.set_project(Project(geometry_layers=[layer]))
+    main_window._viewport.set_selection([("L", e1.id), ("L", e2.id)])
+    main_window._refresh_action_state()
+    main_window._action_join_paths.trigger()
+    after = main_window.project.geometry_layers[0].entities
+    assert len(after) == 1
+    assert len(after[0].segments) == 2
+    main_window._action_undo.trigger()
+    before = main_window.project.geometry_layers[0].entities
+    assert len(before) == 2
+
+
 def test_new_project_inherits_chord_tolerance_from_preferences(
     main_window: MainWindow,
 ) -> None:

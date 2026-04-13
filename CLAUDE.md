@@ -88,11 +88,12 @@ Phase 1). Per-op override via the Properties panel.
   arcs end-to-end.
 - Machine macros (program_start / program_end / tool_change) are defined
   on `MachineDefinition` but not yet consumed by the post-processor.
-- DXFs authored as separate `LINE` entities import as one `GeometryEntity`
-  per LINE, so a four-sided shape becomes four selectable contours instead
-  of one. Polyline-authored DXFs (`LWPOLYLINE`/`POLYLINE`) already arrive
-  as single contours. Future fix: a "Join paths" action and/or an opt-in
-  on-import endpoint-stitch pass.
+- DXF path stitching is now available two ways: an explicit
+  `Operations > Join paths` action that welds the current selection,
+  and an opt-in `auto_stitch_on_import` preference that runs the same
+  pass after every DXF load. Both use `AppPreferences.stitch_tolerance_mm`.
+  Conservative: a vertex shared by 3+ entities (Y/T-junction) is left
+  unstitched.
 - No shared Tool Library yet. Each `Add Profile` creates a fresh
   `ToolController` for the new op (or for the batch if multiple entities
   are selected). Editing diameter in Properties only affects that op's

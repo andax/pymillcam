@@ -9,7 +9,13 @@ import pytest
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.segments import ArcSegment, LineSegment
-from pymillcam.ui.box_selection import BoxMode, direction_from_drag, select_in_box
+from pymillcam.ui.box_selection import (
+    BoxMode,
+    SelectionCombine,
+    combine_selection,
+    direction_from_drag,
+    select_in_box,
+)
 
 
 def _line_layer(name: str = "L") -> tuple[GeometryLayer, GeometryEntity, GeometryEntity]:
@@ -97,3 +103,45 @@ def test_invisible_layer_is_skipped() -> None:
 @pytest.mark.parametrize("mode", [BoxMode.CONTAINED, BoxMode.CROSSING])
 def test_empty_layer_list_is_safe(mode: BoxMode) -> None:
     assert select_in_box([], (0, 0, 1, 1), mode) == []
+
+
+# ---------------------------------------------------------- combine_selection
+
+def test_replace_drops_current() -> None:
+    out = combine_selection(
+        [("L", "a"), ("L", "b")], [("L", "c")], SelectionCombine.REPLACE
+    )
+    assert out == [("L", "c")]
+
+
+def test_add_unions_preserving_order() -> None:
+    out = combine_selection(
+        [("L", "a"), ("L", "b")],
+        [("L", "b"), ("L", "c")],
+        SelectionCombine.ADD,
+    )
+    assert out == [("L", "a"), ("L", "b"), ("L", "c")]
+
+
+def test_toggle_xors_current_and_picked() -> None:
+    out = combine_selection(
+        [("L", "a"), ("L", "b")],
+        [("L", "b"), ("L", "c")],
+        SelectionCombine.TOGGLE,
+    )
+    # b was in both → drops out; a stays; c is new → added.
+    assert out == [("L", "a"), ("L", "c")]
+
+
+def test_toggle_with_empty_pick_is_noop() -> None:
+    out = combine_selection(
+        [("L", "a")], [], SelectionCombine.TOGGLE
+    )
+    assert out == [("L", "a")]
+
+
+def test_combine_does_not_duplicate_existing_entries() -> None:
+    out = combine_selection(
+        [("L", "a"), ("L", "b")], [("L", "a")], SelectionCombine.ADD
+    )
+    assert out == [("L", "a"), ("L", "b")]

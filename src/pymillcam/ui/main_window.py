@@ -35,6 +35,7 @@ from pymillcam.core.operations import (
     OffsetSide,
     ProfileOp,
 )
+from pymillcam.core.path_stitching import stitch_entities
 from pymillcam.core.preferences import (
     AppPreferences,
     PreferencesLoadError,
@@ -251,6 +252,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._output_dock.toggleViewAction())
 
         ops_menu = menu_bar.addMenu("&Operations")
+        self._action_join_paths = QAction("&Join paths", self)
+        self._action_join_paths.setEnabled(False)
+        self._action_join_paths.triggered.connect(self._on_join_paths)
         self._action_add_profile = QAction("Add &Profile", self)
         self._action_add_profile.setEnabled(False)
         self._action_add_profile.triggered.connect(self._on_add_profile)
@@ -261,6 +265,8 @@ class MainWindow(QMainWindow):
         self._action_generate_gcode = QAction("&Generate G-code", self)
         self._action_generate_gcode.setEnabled(False)
         self._action_generate_gcode.triggered.connect(self._on_generate_gcode)
+        ops_menu.addAction(self._action_join_paths)
+        ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_profile)
         ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
@@ -301,6 +307,8 @@ class MainWindow(QMainWindow):
         self._action_generate_gcode.setEnabled(bool(self._project.operations))
         # "Add Profile" enables when at least one geometry entity is selected.
         self._action_add_profile.setEnabled(bool(self._viewport.selection))
+        # "Join paths" needs ≥ 2 selected entities to be meaningful.
+        self._action_join_paths.setEnabled(len(self._viewport.selection) >= 2)
         self._action_delete_operation.setEnabled(
             self._currently_selected_operation() is not None
         )
@@ -412,8 +420,13 @@ class MainWindow(QMainWindow):
 
     def load_dxf(self, path: Path) -> None:
         """Import a DXF from disk and install its layers into a fresh project."""
+        stitch_tol = (
+            self._preferences.stitch_tolerance_mm
+            if self._preferences.auto_stitch_on_import
+            else None
+        )
         try:
-            layers: list[GeometryLayer] = import_dxf(path)
+            layers: list[GeometryLayer] = import_dxf(path, stitch_tolerance=stitch_tol)
         except DxfImportError as exc:
             QMessageBox.critical(self, "DXF import failed", str(exc))
             return
@@ -520,6 +533,29 @@ class MainWindow(QMainWindow):
         return None
 
     # ---------------------------------------------------------- operations
+
+    def _on_join_paths(self) -> None:
+        """Stitch the currently-selected entities into one or more contours."""
+        targets = list(self._viewport.selection)
+        if len(targets) < 2:
+            return
+        # Group targets by layer so we stitch within each layer in isolation.
+        per_layer: dict[str, list[str]] = {}
+        for layer_name, entity_id in targets:
+            per_layer.setdefault(layer_name, []).append(entity_id)
+        tolerance = self._preferences.stitch_tolerance_mm
+
+        def mutate(project: Project) -> None:
+            for layer in project.geometry_layers:
+                ids = per_layer.get(layer.name)
+                if not ids:
+                    continue
+                selected = [e for e in layer.entities if e.id in ids]
+                kept = [e for e in layer.entities if e.id not in ids]
+                stitched = stitch_entities(selected, tolerance)
+                layer.entities = kept + stitched
+
+        self._do_action("Join paths", mutate)
 
     def _on_add_profile(self) -> None:
         targets = list(self._viewport.selection)

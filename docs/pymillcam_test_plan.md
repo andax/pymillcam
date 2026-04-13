@@ -31,8 +31,9 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_ui/test_box_selection.py` | ~9 | direction_from_drag, contained vs crossing matching, inverted box normalisation, arc/point handling, invisible layer skip, empty layer list |
 | `tests/test_core/test_preferences.py` | ~7 | Defaults, save/load round-trip, missing file → defaults, malformed/invalid JSON raises, atomic write |
 | `tests/test_ui/test_preferences_dialog.py` | ~4 | Field population, edits round-trip via result_preferences, stitch field disabled when auto-stitch off, dialog doesn't mutate input |
+| `tests/test_core/test_path_stitching.py` | ~13 | Two/three/four-line chains, ambiguous junction stays unstitched, tolerance window, arc reversal negates sweep, closure snap, mixed closed/open, pass-through |
 
-**Totals: ~192 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~208 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 

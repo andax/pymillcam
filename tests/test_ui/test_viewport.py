@@ -178,10 +178,17 @@ def test_set_layers_drops_stale_selection(viewport: Viewport) -> None:
     assert viewport.selection == []
 
 
-def _drive_drag(viewport: Viewport, start: QPointF, end: QPointF) -> None:
+def _drive_drag(
+    viewport: Viewport,
+    start: QPointF,
+    end: QPointF,
+    modifiers: object | None = None,
+) -> None:
     """Replay a left-button press → move → release at the widget level."""
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QMouseEvent
+
+    mods = modifiers if modifiers is not None else Qt.KeyboardModifier.NoModifier
 
     def _ev(kind, pos: QPointF, button: Qt.MouseButton) -> QMouseEvent:
         return QMouseEvent(
@@ -190,7 +197,7 @@ def _drive_drag(viewport: Viewport, start: QPointF, end: QPointF) -> None:
             viewport.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))),
             button,
             Qt.MouseButton.LeftButton if button == Qt.MouseButton.NoButton else button,
-            Qt.KeyboardModifier.NoModifier,
+            mods,
         )
 
     left = Qt.MouseButton.LeftButton
@@ -268,6 +275,77 @@ def test_click_on_empty_space_clears_selection(viewport: Viewport) -> None:
     p = viewport.world_to_widget(500, 500)
     _drive_drag(viewport, p, p)
     assert viewport.selection == []
+
+
+def test_ctrl_click_toggles_individual_entity(viewport: Viewport) -> None:
+    from PySide6.QtCore import Qt
+
+    a = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
+    b = GeometryEntity(segments=[LineSegment(start=(0, 5), end=(10, 5))])
+    viewport.set_layers([GeometryLayer(name="L", entities=[a, b])])
+    viewport.fit_to_view()
+    viewport.set_selection([("L", a.id), ("L", b.id)])
+
+    # Ctrl+click on `a` should remove just `a`.
+    p = viewport.world_to_widget(5, 0)
+    _drive_drag(viewport, p, p, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert viewport.selection == [("L", b.id)]
+
+    # Ctrl+click again on `a` should add it back.
+    _drive_drag(viewport, p, p, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert set(viewport.selection) == {("L", a.id), ("L", b.id)}
+
+
+def test_shift_click_adds_to_selection(viewport: Viewport) -> None:
+    from PySide6.QtCore import Qt
+
+    a = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
+    b = GeometryEntity(segments=[LineSegment(start=(0, 5), end=(10, 5))])
+    viewport.set_layers([GeometryLayer(name="L", entities=[a, b])])
+    viewport.fit_to_view()
+    viewport.set_selection([("L", a.id)])
+
+    p = viewport.world_to_widget(5, 5)
+    _drive_drag(viewport, p, p, modifiers=Qt.KeyboardModifier.ShiftModifier)
+    assert set(viewport.selection) == {("L", a.id), ("L", b.id)}
+
+
+def test_ctrl_drag_box_xors_entities_in_box(viewport: Viewport) -> None:
+    from PySide6.QtCore import Qt
+
+    inside = GeometryEntity(
+        segments=[
+            LineSegment(start=(2, 2), end=(8, 2)),
+            LineSegment(start=(8, 2), end=(8, 8)),
+            LineSegment(start=(8, 8), end=(2, 8)),
+            LineSegment(start=(2, 8), end=(2, 2)),
+        ],
+        closed=True,
+    )
+    other = GeometryEntity(
+        segments=[LineSegment(start=(50, 50), end=(60, 50))],
+    )
+    viewport.set_layers([GeometryLayer(name="L", entities=[inside, other])])
+    viewport.fit_to_view()
+    viewport.set_selection([("L", inside.id), ("L", other.id)])
+
+    p1 = viewport.world_to_widget(0, 10)
+    p2 = viewport.world_to_widget(10, 0)
+    _drive_drag(viewport, p1, p2, modifiers=Qt.KeyboardModifier.ControlModifier)
+    # Box covered `inside` only — toggled off; `other` untouched.
+    assert viewport.selection == [("L", other.id)]
+
+
+def test_ctrl_click_on_empty_space_keeps_existing(viewport: Viewport) -> None:
+    from PySide6.QtCore import Qt
+
+    entity = GeometryEntity(segments=[LineSegment(start=(0, 0), end=(10, 0))])
+    viewport.set_layers([GeometryLayer(name="L", entities=[entity])])
+    viewport.set_selection([("L", entity.id)])
+
+    p = viewport.world_to_widget(500, 500)
+    _drive_drag(viewport, p, p, modifiers=Qt.KeyboardModifier.ControlModifier)
+    assert viewport.selection == [("L", entity.id)]
 
 
 def test_distance_to_arc_handles_angles_outside_sweep() -> None:
