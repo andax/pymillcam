@@ -23,8 +23,9 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_io/test_project_io.py` | ~8 | Save/load round-trip, string vs Path, pretty vs compact, error paths |
 | `tests/test_engine/test_profile.py` | ~20 | Z-level computation, inside/outside/on-line offsets, stepdown cascade, arc IR emission (CW/CCW), chord_tolerance cascade |
 | `tests/test_post/test_uccnc.py` | ~18 | Individual G-code translations, feed-rate modality, coordinate formatting, end-to-end DXF → G-code with arcs preserved |
+| `tests/test_ui/test_main_window.py` | ~7 | Main window instantiates, menu structure, dock placement, placeholder actions start disabled |
 
-**Totals: ~95 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~101 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -79,9 +80,15 @@ Append rows when human eyeballs have confirmed something works.
 
 Mostly manual; automated coverage is limited to signal/slot smoke tests via pytest-qt.
 
-**Sub-commit 1 — Main window shell**
-- A: Window class instantiates without error under pytest-qt.
-- M-V: Window opens, title shows, menu bar present with File/Edit/View/Operations menus, dock panels (tree left, viewport center, output bottom) visible and resizable.
+**Sub-commit 1 — Main window shell**  ✅
+- A: `tests/test_ui/test_main_window.py` — instantiation, title, menu order, dock placement, placeholder actions disabled, exit action closes window.
+- **M-V to do**: run `uv run pymillcam`, confirm
+  - [ ] Window opens with title "PyMillCAM"
+  - [ ] Menu bar shows File / Edit / View / Operations in that order
+  - [ ] Left dock "Layers & Operations" tree panel visible and resizable
+  - [ ] Bottom dock "G-code Output" panel visible and resizable
+  - [ ] Central area shows the viewport placeholder text
+  - [ ] View menu can toggle tree and output docks
 
 **Sub-commit 2 — Viewport (the hardest to verify)**
 - A: Viewport widget instantiates; `set_layers(list[GeometryLayer])` doesn't crash with mixed line/arc content.

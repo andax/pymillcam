@@ -61,12 +61,6 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
-# pymillcam.ui.main_window is imported by __main__.py but doesn't exist yet.
-# Remove this override once the UI module is in place.
-[[tool.mypy.overrides]]
-module = "pymillcam.ui.*"
-ignore_missing_imports = true
-
 # ezdxf ships py.typed but doesn't declare __all__ in most submodules, so
 # strict mode flags every import as an implicit re-export.
 [[tool.mypy.overrides]]

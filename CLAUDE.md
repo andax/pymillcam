@@ -72,7 +72,7 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
 2. ✅ DXF import (arcs preserved as ArcSegments, including LWPOLYLINE bulges)
 3. ✅ Basic profile toolpath (offset, multi-depth)
 4. ✅ IR + UCCNC post-processor (emits G2/G3 arcs; end-to-end DXF → G-code works)
-5. ⬜ Minimal PySide6 window (viewport + tree + output)
+5. 🚧 Minimal PySide6 window — sub-commit 1 (shell) done; viewport, tree wiring, selection still pending
 6. ⬜ Undo/redo command infrastructure
 7. ⬜ Directional box selection
 8. ✅ Project save/load as JSON
