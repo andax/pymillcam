@@ -309,7 +309,11 @@ def test_outside_offset_on_full_circle_keeps_every_vertex_outside() -> None:
         closed=True,
     )
     segs = _offset_contour(
-        entity, radius=1.5, side=OffsetSide.OUTSIDE, chord_tolerance=0.05
+        entity,
+        radius=1.5,
+        side=OffsetSide.OUTSIDE,
+        chord_tolerance=0.05,
+        direction=MillingDirection.CLIMB,
     )
     # Tool is 3 mm → outside offset radius is 25 + 1.5 = 26.5 mm. Allow a
     # small slack for chord-vs-arc geometry.
@@ -317,6 +321,45 @@ def test_outside_offset_on_full_circle_keeps_every_vertex_outside() -> None:
         sx, sy = seg.start
         r = math.hypot(sx, sy)
         assert 26.4 <= r <= 26.6, f"vertex {(sx, sy)} at r={r:.4f} is off"
+
+
+def test_outside_climb_traces_offset_cw() -> None:
+    """Outside profile in climb mode (right-hand spindle) walks the part CW.
+
+    Per the chip-thickness definition: for a CW spindle on an outside profile,
+    travelling CW around the part puts each tooth at maximum chip thickness on
+    entry — the textbook signature of climb. Corner fillets are therefore G2
+    (CW arc) moves.
+    """
+    project, op, _ = _project_with_rectangle(
+        offset_side=OffsetSide.OUTSIDE, tool_diameter=2.0, stepdown=2.0,
+    )
+    op.direction = MillingDirection.CLIMB
+    tp = generate_profile_toolpath(op, project)
+    xy_moves = [
+        i for i in tp.instructions
+        if i.type in (MoveType.FEED, MoveType.ARC_CW, MoveType.ARC_CCW)
+        and i.x is not None and i.z is None
+    ]
+    assert any(i.type is MoveType.ARC_CW for i in xy_moves)
+    assert not any(i.type is MoveType.ARC_CCW for i in xy_moves)
+
+
+def test_outside_conventional_traces_offset_ccw() -> None:
+    """Outside profile in conventional mode (right-hand spindle) walks CCW —
+    the offsetter's natural orientation, so no chain reversal."""
+    project, op, _ = _project_with_rectangle(
+        offset_side=OffsetSide.OUTSIDE, tool_diameter=2.0, stepdown=2.0,
+    )
+    op.direction = MillingDirection.CONVENTIONAL
+    tp = generate_profile_toolpath(op, project)
+    xy_moves = [
+        i for i in tp.instructions
+        if i.type in (MoveType.FEED, MoveType.ARC_CW, MoveType.ARC_CCW)
+        and i.x is not None and i.z is None
+    ]
+    assert any(i.type is MoveType.ARC_CCW for i in xy_moves)
+    assert not any(i.type is MoveType.ARC_CW for i in xy_moves)
 
 
 def test_chord_tolerance_cascades_from_operation() -> None:

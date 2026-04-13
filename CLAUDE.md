@@ -81,11 +81,14 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
 Phase 1). Per-op override via the Properties panel.
 
 ### Known limitations to revisit
-- `engine/profile.py::_offset_contour` still routes inside/outside offsets
-  through `Polygon.buffer`, collapsing arcs to chords. This is the only
-  remaining lossy interface; replacing it with an arc-aware offset
-  requires no changes to callers. `OffsetSide.ON_LINE` already preserves
-  arcs end-to-end.
+- `core/offsetter.offset_closed_contour` is the analytical, arc-preserving
+  offsetter — handles full circles, line-only polygons (with rounded outer
+  corners and intersected inner corners), and line+tangent-arc shapes
+  (rounded rectangles). `engine/profile.py::_offset_contour` calls it
+  first and falls back to `Polygon.buffer` only for cases the MVP doesn't
+  cover (non-tangent line↔arc concave joins, multi-loop / holed contours).
+  The fallback path still collapses arcs to chords; track the residual
+  cases as they come up.
 - Machine macros (program_start / program_end / tool_change) are defined
   on `MachineDefinition` but not yet consumed by the post-processor.
 - DXF path stitching is now available two ways: an explicit

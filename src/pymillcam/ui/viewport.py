@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
+    QPolygonF,
     QResizeEvent,
     QWheelEvent,
 )
@@ -63,6 +64,11 @@ COLOR_BOX_CONTAINED_FILL = QColor(80, 220, 120, 40)
 COLOR_BOX_CONTAINED_LINE = QColor(80, 220, 120)
 COLOR_BOX_CROSSING_FILL = QColor(80, 160, 240, 40)
 COLOR_BOX_CROSSING_LINE = QColor(80, 160, 240)
+
+# Direction arrow size in widget pixels, and the minimum on-screen segment
+# length below which we skip the arrow (avoids cluttering tiny chord runs).
+ARROW_SIZE_PX = 7.0
+ARROW_MIN_SEGMENT_PX = 24.0
 
 # How close (in widget pixels) the click must be to an entity to hit it.
 HIT_TEST_TOLERANCE_PX = 5.0
@@ -363,9 +369,16 @@ class Viewport(QWidget):
         painter.setPen(prev_pen)
 
     def _draw_profile_preview(self, painter: QPainter) -> None:
-        painter.setPen(QPen(COLOR_PROFILE_PREVIEW, 2.0))
+        pen = QPen(COLOR_PROFILE_PREVIEW, 2.0)
+        painter.setPen(pen)
         for seg in self._profile_preview:
             self._draw_segment(painter, seg)
+        # Direction arrows on top, in the same colour.
+        painter.setBrush(COLOR_PROFILE_PREVIEW)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for seg in self._profile_preview:
+            self._draw_direction_arrow(painter, seg)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_toolpath_preview(self, painter: QPainter) -> None:
         feed_pen = QPen(COLOR_TOOLPATH_FEED, 1.6)
@@ -373,6 +386,63 @@ class Viewport(QWidget):
         for move in self._toolpath_preview:
             painter.setPen(feed_pen if move.kind is MoveKind.FEED else rapid_pen)
             self._draw_segment(painter, move.segment)
+        # Arrows only on feed moves — rapids are positioning, not cutting.
+        painter.setBrush(COLOR_TOOLPATH_FEED)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for move in self._toolpath_preview:
+            if move.kind is MoveKind.FEED:
+                self._draw_direction_arrow(painter, move.segment)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _draw_direction_arrow(
+        self, painter: QPainter, seg: LineSegment | ArcSegment
+    ) -> None:
+        """Filled triangle at segment midpoint, pointing along travel."""
+        if isinstance(seg, LineSegment):
+            sx, sy = seg.start
+            ex, ey = seg.end
+            length_world = math.hypot(ex - sx, ey - sy)
+            length_px = length_world * self._scale
+            if length_px < ARROW_MIN_SEGMENT_PX:
+                return
+            mid = QPointF((sx + ex) / 2, (sy + ey) / 2)
+            tan_x = (ex - sx) / length_world
+            tan_y = (ey - sy) / length_world
+        else:
+            length_world = abs(math.radians(seg.sweep_deg)) * seg.radius
+            length_px = length_world * self._scale
+            if length_px < ARROW_MIN_SEGMENT_PX:
+                return
+            mid_angle_deg = seg.start_angle_deg + seg.sweep_deg / 2
+            rad = math.radians(mid_angle_deg)
+            cx, cy = seg.center
+            mid = QPointF(
+                cx + seg.radius * math.cos(rad),
+                cy + seg.radius * math.sin(rad),
+            )
+            sign = 1.0 if seg.sweep_deg > 0 else -1.0
+            tan_x = -sign * math.sin(rad)
+            tan_y = sign * math.cos(rad)
+        # World-space tangent → widget-space (Y flip).
+        tip_widget = self.world_to_widget(mid.x(), mid.y())
+        # In widget coords the X axis is the same; Y is flipped.
+        wtx, wty = tan_x, -tan_y
+        # Build the triangle in widget space.
+        size = ARROW_SIZE_PX
+        tip = QPointF(tip_widget.x() + wtx * size, tip_widget.y() + wty * size)
+        # Two base points, perpendicular ±half-size from the back of the arrow.
+        bx = tip_widget.x() - wtx * size * 0.4
+        by = tip_widget.y() - wty * size * 0.4
+        perp_x = -wty
+        perp_y = wtx
+        poly = QPolygonF(
+            [
+                tip,
+                QPointF(bx + perp_x * size * 0.5, by + perp_y * size * 0.5),
+                QPointF(bx - perp_x * size * 0.5, by - perp_y * size * 0.5),
+            ]
+        )
+        painter.drawPolygon(poly)
 
     def _draw_drag_box(self, painter: QPainter) -> None:
         if self._left_press_widget is None or self._drag_current_widget is None:

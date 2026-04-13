@@ -124,6 +124,30 @@ def segments_to_shapely(
     return LineString(points)
 
 
+def reverse_segment(seg: LineSegment | ArcSegment) -> LineSegment | ArcSegment:
+    """Walk the segment in the opposite direction.
+
+    For lines: swap start and end. For arcs: same circle, sweep negated, new
+    start angle is the old end angle (so the arc traces the same path
+    backwards).
+    """
+    if isinstance(seg, LineSegment):
+        return LineSegment(start=seg.end, end=seg.start)
+    return ArcSegment(
+        center=seg.center,
+        radius=seg.radius,
+        start_angle_deg=seg.start_angle_deg + seg.sweep_deg,
+        sweep_deg=-seg.sweep_deg,
+    )
+
+
+def reverse_segment_chain(
+    segments: list[LineSegment | ArcSegment],
+) -> list[LineSegment | ArcSegment]:
+    """Return a new chain that traces `segments` end-to-start."""
+    return [reverse_segment(s) for s in reversed(segments)]
+
+
 def _polar(center: tuple[float, float], radius: float, angle_deg: float) -> tuple[float, float]:
     cx, cy = center
     theta = math.radians(angle_deg)

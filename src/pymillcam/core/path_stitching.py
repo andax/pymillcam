@@ -14,7 +14,7 @@ import math
 from typing import Literal
 
 from pymillcam.core.geometry import GeometryEntity
-from pymillcam.core.segments import ArcSegment, LineSegment, Segment
+from pymillcam.core.segments import LineSegment, Segment, reverse_segment_chain
 
 _End = Literal["start", "end"]
 
@@ -60,7 +60,7 @@ def stitch_entities(
             idx, end = match
             other = list(open_entities[idx].segments)
             if end == "end":
-                other = _reverse_segments(other)
+                other = reverse_segment_chain(other)
             chain.extend(other)
             used.add(idx)
 
@@ -73,7 +73,7 @@ def stitch_entities(
             idx, end = match
             other = list(open_entities[idx].segments)
             if end == "start":
-                other = _reverse_segments(other)
+                other = reverse_segment_chain(other)
             chain = other + chain
             used.add(idx)
 
@@ -139,23 +139,6 @@ def _within_tol(
     a: tuple[float, float], b: tuple[float, float], tolerance: float
 ) -> bool:
     return math.hypot(a[0] - b[0], a[1] - b[1]) <= tolerance
-
-
-def _reverse_segments(segments: list[Segment]) -> list[Segment]:
-    return [_reverse_segment(s) for s in reversed(segments)]
-
-
-def _reverse_segment(seg: Segment) -> Segment:
-    if isinstance(seg, LineSegment):
-        return LineSegment(start=seg.end, end=seg.start)
-    # Arc: walk it the other way — same circle, sweep negated, new start
-    # is the old end.
-    return ArcSegment(
-        center=seg.center,
-        radius=seg.radius,
-        start_angle_deg=seg.start_angle_deg + seg.sweep_deg,
-        sweep_deg=-seg.sweep_deg,
-    )
 
 
 def _snap_closure(chain: list[Segment]) -> list[Segment]:

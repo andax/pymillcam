@@ -331,8 +331,10 @@ def test_editing_op_clears_stale_toolpath_preview(main_window: MainWindow) -> No
     main_window._select_operation_in_tree(op.id)
     main_window._action_generate_gcode.trigger()
     assert main_window._viewport._toolpath_preview
+    assert main_window._output.toPlainText() != ""
     main_window._properties._form.cut_depth.setValue(-7.0)
     assert main_window._viewport._toolpath_preview == []
+    assert main_window._output.toPlainText() == ""
 
 
 def test_undo_add_profile_removes_op_and_tool_controller(

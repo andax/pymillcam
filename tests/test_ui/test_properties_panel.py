@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pytestqt.qtbot import QtBot
 
-from pymillcam.core.operations import OffsetSide, ProfileOp
+from pymillcam.core.operations import MillingDirection, OffsetSide, ProfileOp
 from pymillcam.core.tools import Tool, ToolController
 from pymillcam.ui.properties_panel import PropertiesPanel
 
@@ -90,6 +90,17 @@ def test_tool_diameter_field_is_disabled_without_a_tool_controller(
 ) -> None:
     panel.set_operation(ProfileOp(name="op"), tool_controller=None)
     assert not panel._form.tool_diameter.isEnabled()
+
+
+def test_direction_field_round_trips_through_the_form(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = ProfileOp(name="op", direction=MillingDirection.CLIMB)
+    panel.set_operation(op)
+    assert panel._form.direction.currentText() == "climb"
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._form.direction.setCurrentText("conventional")
+    assert op.direction is MillingDirection.CONVENTIONAL
 
 
 def test_editing_tool_diameter_writes_back_to_tool_controller(

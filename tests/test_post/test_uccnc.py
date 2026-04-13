@@ -179,9 +179,12 @@ def test_end_to_end_dxf_to_gcode_has_arcs_for_circular_contour(tmp_path: Path) -
     assert "I-10 J0" in gcode
 
 
-def test_end_to_end_rectangle_profile_emits_linear_moves(tmp_path: Path) -> None:
-    """A rectangular profile with outside offset should produce only G1 moves
-    (rectangle has no arc segments), plus G0 rapids for approach/retract."""
+def test_end_to_end_rectangle_outside_profile_rounds_corners_with_arcs(
+    tmp_path: Path,
+) -> None:
+    """An outside-offset rectangle should now ship with G3 fillets at every
+    corner (the analytical offsetter inserts a tool-radius arc per convex
+    corner) plus G1 line moves along each edge."""
     entity = GeometryEntity(
         segments=[
             LineSegment(start=(0, 0), end=(50, 0)),
@@ -209,12 +212,22 @@ def test_end_to_end_rectangle_profile_emits_linear_moves(tmp_path: Path) -> None
     tp = generate_profile_toolpath(op, project)
 
     gcode = UccncPostProcessor().post_program([tp])
-    # No arc moves — check by line-starts so the "G2" substring in the
-    # "G21" preamble doesn't trigger a false positive.
     motion_lines = [line for line in gcode.splitlines() if line and line[0] == "G"]
-    assert not any(line.startswith(("G2 ", "G3 ")) for line in motion_lines)
-    # Should have plenty of G1 moves tracing the offset rectangle.
-    assert sum(1 for line in motion_lines if line.startswith("G1 ")) > 4
+    # Two passes (cut_depth -2, stepdown 1) × four corner fillets per pass.
+    # Default direction is CLIMB; for a right-hand (CW) spindle on an outside
+    # profile, climb travels CW around the part, so the corner fillets are G2.
+    arc_moves = [
+        line for line in motion_lines if line.startswith(("G2 ", "G3 "))
+    ]
+    assert len(arc_moves) == 8
+    g2_moves = [line for line in motion_lines if line.startswith("G2 ")]
+    assert len(g2_moves) == 8, "climb on outside profile should emit G2 fillets"
+    # And four edge G1 line moves per pass.
+    g1_xy = [
+        line for line in motion_lines
+        if line.startswith("G1 ") and ("X" in line or "Y" in line) and "Z" not in line
+    ]
+    assert len(g1_xy) >= 8
 
 
 def test_end_to_end_arc_ij_relative_to_start(tmp_path: Path) -> None:

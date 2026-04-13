@@ -18,12 +18,14 @@ import math
 from shapely.geometry import Polygon
 
 from pymillcam.core.geometry import GeometryEntity
-from pymillcam.core.operations import OffsetSide, ProfileOp
+from pymillcam.core.offsetter import OffsetError, offset_closed_contour
+from pymillcam.core.operations import MillingDirection, OffsetSide, ProfileOp
 from pymillcam.core.project import Project
 from pymillcam.core.segments import (
     ArcSegment,
     LineSegment,
     Segment,
+    reverse_segment_chain,
     segments_to_shapely,
 )
 from pymillcam.core.tools import ToolController
@@ -53,7 +55,11 @@ def compute_profile_preview(op: ProfileOp, project: Project) -> list[Segment]:
     out: list[Segment] = []
     for ref in op.geometry_refs:
         entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
-        out.extend(_offset_contour(entity, tool_radius, op.offset_side, chord_tolerance))
+        out.extend(
+            _offset_contour(
+                entity, tool_radius, op.offset_side, chord_tolerance, op.direction
+            )
+        )
     return out
 
 
@@ -82,7 +88,9 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
 
     for ref in op.geometry_refs:
         entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
-        segments = _offset_contour(entity, tool_radius, op.offset_side, chord_tolerance)
+        segments = _offset_contour(
+            entity, tool_radius, op.offset_side, chord_tolerance, op.direction
+        )
         _emit_contour_passes(
             instructions,
             segments,
@@ -134,6 +142,7 @@ def _offset_contour(
     radius: float,
     side: OffsetSide,
     chord_tolerance: float,
+    direction: MillingDirection,
 ) -> list[Segment]:
     if not entity.segments:
         raise ProfileGenerationError(
@@ -141,14 +150,57 @@ def _offset_contour(
         )
 
     if side is OffsetSide.ON_LINE or radius == 0:
-        return list(entity.segments)
+        segments = list(entity.segments)
+    else:
+        if not entity.closed:
+            raise ProfileGenerationError(
+                "Inside/outside offset requires a closed contour; got an open segment chain. "
+                "Use offset_side=ON_LINE for open contours."
+            )
+        # Try the analytical, arc-preserving offsetter first. It handles the
+        # common cases (circles, line-only polygons, line+tangent-arc shapes)
+        # without collapsing arcs to chords.
+        try:
+            segments = offset_closed_contour(
+                list(entity.segments), radius, outside=side is OffsetSide.OUTSIDE
+            )
+        except OffsetError:
+            # Cases the analytical offsetter punts on (non-tangent line↔arc
+            # joins, self-intersection, etc.) fall back to Shapely's buffer.
+            segments = _offset_contour_via_buffer(entity, radius, side, chord_tolerance)
 
-    if not entity.closed:
-        raise ProfileGenerationError(
-            "Inside/outside offset requires a closed contour; got an open segment chain. "
-            "Use offset_side=ON_LINE for open contours."
-        )
+    return _apply_milling_direction(segments, side, direction)
 
+
+def _apply_milling_direction(
+    segments: list[Segment], side: OffsetSide, direction: MillingDirection
+) -> list[Segment]:
+    """Reverse the chain when the chosen milling direction needs the opposite
+    travel sense.
+
+    Convention (right-handed CW spindle, looking down the Z axis), derived
+    from the chip-thickness definition (climb = chip max at entry):
+      - OUTSIDE + CLIMB        → travel CW around the part
+      - OUTSIDE + CONVENTIONAL → travel CCW around the part   (offsetter default)
+      - INSIDE  + CLIMB        → travel CCW around the hole   (offsetter default)
+      - INSIDE  + CONVENTIONAL → travel CW around the hole
+    `OffsetSide.ON_LINE` keeps the source contour direction — climb /
+    conventional don't have a meaning when the cutter centre rides the line.
+    """
+    if side is OffsetSide.ON_LINE:
+        return segments
+    needs_reverse = (
+        side is OffsetSide.OUTSIDE and direction is MillingDirection.CLIMB
+    ) or (side is OffsetSide.INSIDE and direction is MillingDirection.CONVENTIONAL)
+    return reverse_segment_chain(segments) if needs_reverse else segments
+
+
+def _offset_contour_via_buffer(
+    entity: GeometryEntity,
+    radius: float,
+    side: OffsetSide,
+    chord_tolerance: float,
+) -> list[Segment]:
     shadow = segments_to_shapely(
         entity.segments, closed=True, tolerance=chord_tolerance
     )
@@ -168,8 +220,6 @@ def _offset_contour(
             f"Offset produced {offset.geom_type}; MVP only supports a single polygon result"
         )
 
-    # Shapely's buffer has already collapsed arcs to chords, so every output
-    # segment is a line. Arc-aware offsetting (future) will return a mix.
     coords = list(offset.exterior.coords)
     return [
         LineSegment(start=(coords[i][0], coords[i][1]), end=(coords[i + 1][0], coords[i + 1][1]))

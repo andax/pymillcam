@@ -31,9 +31,12 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_ui/test_box_selection.py` | ~9 | direction_from_drag, contained vs crossing matching, inverted box normalisation, arc/point handling, invisible layer skip, empty layer list |
 | `tests/test_core/test_preferences.py` | ~7 | Defaults, save/load round-trip, missing file → defaults, malformed/invalid JSON raises, atomic write |
 | `tests/test_ui/test_preferences_dialog.py` | ~4 | Field population, edits round-trip via result_preferences, stitch field disabled when auto-stitch off, dialog doesn't mutate input |
-| `tests/test_core/test_path_stitching.py` | ~13 | Two/three/four-line chains, ambiguous junction stays unstitched, tolerance window, arc reversal negates sweep, closure snap, mixed closed/open, pass-through |
+| `tests/test_core/test_path_stitching.py` | ~15 | Two/three/four-line chains, ambiguous junction stays unstitched, tolerance window, arc reversal negates sweep, closure snap, mixed closed/open, pass-through, label rewrite to "path" |
+| `tests/test_core/test_offsetter.py` | ~12 | Full-circle grow/shrink, square outside rounds corners, square inside trims corners, CW input normalised, rounded rectangle preserves arc centres, fillet geometry, expected area, too-large-feature raises |
+| _direction in `tests/test_engine/test_profile.py`_ | +2 | Outside+climb traces CCW; outside+conventional reverses to CW |
+| _direction in `tests/test_ui/test_properties_panel.py`_ | +1 | Direction combo round-trips through the form |
 
-**Totals: ~208 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~234 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -45,6 +48,7 @@ Any change that breaks these should trip a test. If not, add the test.
 4. `ProfileOp.chord_tolerance` overrides `ProjectSettings.chord_tolerance` (cascade direction preserved).
 5. Project JSON round-trip preserves arc segments as `ArcSegment`, not chord approximations.
 6. Full-circle arcs through `segments_to_shapely` close exactly (no sub-picometre residual edge), so `Polygon.buffer` produces a clean offset ring with every vertex at the expected radius.
+7. OUTSIDE/INSIDE offset of a circle, line-only polygon, or rounded rectangle goes through the analytical offsetter and preserves arcs (no chord faceting). G-code shows G3 fillets at convex corners.
 
 ## Manual verification log
 

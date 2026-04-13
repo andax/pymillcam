@@ -661,8 +661,10 @@ class MainWindow(QMainWindow):
                     child.setText(0, f"{op.name} [{op.type}]")
         # Refresh the live profile preview against the new parameters.
         self._update_profile_preview(self._currently_selected_operation())
-        # Edits invalidate any previously generated toolpath.
+        # Edits invalidate any previously generated toolpath — clear both the
+        # viewport overlay and the G-code text so neither is misleading.
         self._viewport.clear_toolpath_preview()
+        self._output.clear()
         # Restart the coalesce timer — the actual stack push happens once the
         # user pauses for `_edit_timer.interval()` ms.
         if self._edit_snapshot is not None:

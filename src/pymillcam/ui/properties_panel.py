@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from pymillcam.core.operations import OffsetSide, ProfileOp
+from pymillcam.core.operations import MillingDirection, OffsetSide, ProfileOp
 from pymillcam.core.tools import ToolController
 
 
@@ -48,6 +48,7 @@ class PropertiesPanel(QWidget):
 
         self._form.name.textEdited.connect(self._on_field_changed)
         self._form.offset_side.currentTextChanged.connect(self._on_field_changed)
+        self._form.direction.currentTextChanged.connect(self._on_field_changed)
         self._form.cut_depth.valueChanged.connect(self._on_field_changed)
         self._form.multi_depth.toggled.connect(self._on_field_changed)
         self._form.stepdown.valueChanged.connect(self._on_field_changed)
@@ -69,6 +70,7 @@ class PropertiesPanel(QWidget):
         try:
             self._form.name.setText(operation.name)
             self._form.offset_side.setCurrentText(operation.offset_side.value)
+            self._form.direction.setCurrentText(operation.direction.value)
             self._form.cut_depth.setValue(operation.cut_depth)
             self._form.multi_depth.setChecked(operation.multi_depth)
             self._form.stepdown.setValue(
@@ -96,6 +98,7 @@ class PropertiesPanel(QWidget):
         op = self._operation
         op.name = self._form.name.text()
         op.offset_side = OffsetSide(self._form.offset_side.currentText())
+        op.direction = MillingDirection(self._form.direction.currentText())
         op.cut_depth = self._form.cut_depth.value()
         op.multi_depth = self._form.multi_depth.isChecked()
         self._form.stepdown.setEnabled(op.multi_depth)
@@ -120,6 +123,8 @@ class _ProfileForm(QWidget):
         self.name = QLineEdit()
         self.offset_side = QComboBox()
         self.offset_side.addItems([s.value for s in OffsetSide])
+        self.direction = QComboBox()
+        self.direction.addItems([d.value for d in MillingDirection])
         self.cut_depth = QDoubleSpinBox()
         self.cut_depth.setRange(-1000.0, 1000.0)
         self.cut_depth.setDecimals(3)
@@ -147,6 +152,7 @@ class _ProfileForm(QWidget):
         form.addRow("Name", self.name)
         form.addRow("Tool diameter", self.tool_diameter)
         form.addRow("Offset side", self.offset_side)
+        form.addRow("Direction", self.direction)
         form.addRow("Cut depth", self.cut_depth)
         form.addRow("", self.multi_depth)
         form.addRow("Stepdown", self.stepdown)
