@@ -60,6 +60,9 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+# Pydantic's mypy plugin teaches mypy about model field defaults so that
+# `Model()` without arguments doesn't trip "missing argument" errors.
+plugins = ["pydantic.mypy"]
 
 # ezdxf ships py.typed but doesn't declare __all__ in most submodules, so
 # strict mode flags every import as an implicit re-export.

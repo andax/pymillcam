@@ -35,7 +35,13 @@ from pymillcam.core.operations import (
     OffsetSide,
     ProfileOp,
 )
-from pymillcam.core.project import Project
+from pymillcam.core.preferences import (
+    AppPreferences,
+    PreferencesLoadError,
+    load_preferences,
+    save_preferences,
+)
+from pymillcam.core.project import Project, ProjectSettings
 from pymillcam.core.tools import Tool, ToolController, ToolShape
 from pymillcam.engine.ir_walker import walk_toolpath
 from pymillcam.engine.profile import (
@@ -46,6 +52,7 @@ from pymillcam.engine.profile import (
 from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post.uccnc import UccncPostProcessor
+from pymillcam.ui.preferences_dialog import PreferencesDialog, default_preferences_path
 from pymillcam.ui.properties_panel import PropertiesPanel
 from pymillcam.ui.viewport import Viewport
 
@@ -55,8 +62,6 @@ from pymillcam.ui.viewport import Viewport
 #   ("ops_group",)                          — top-level "Operations" parent
 #   ("operation", operation_id)             — operation row under that parent
 _TreeRef = tuple[str, ...]
-
-DEFAULT_TOOL_DIAMETER_MM = 3.0
 
 
 class MainWindow(QMainWindow):
@@ -68,7 +73,9 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._apply_dock_styling()
 
-        self._project = Project()
+        self._preferences_path = default_preferences_path()
+        self._preferences = self._load_preferences_or_default()
+        self._project = self._make_new_project()
         self._project_path: Path | None = None
         self._syncing_selection = False
         self._stack = CommandStack()
@@ -78,7 +85,7 @@ class MainWindow(QMainWindow):
         self._edit_snapshot: dict[str, Any] | None = None
         self._edit_timer = QTimer(self)
         self._edit_timer.setSingleShot(True)
-        self._edit_timer.setInterval(400)
+        self._edit_timer.setInterval(self._preferences.edit_coalesce_ms)
         self._edit_timer.timeout.connect(self._commit_pending_edit)
 
         self._build_viewport()
@@ -210,8 +217,13 @@ class MainWindow(QMainWindow):
         self._action_redo.setShortcut(QKeySequence.StandardKey.Redo)
         self._action_redo.setEnabled(False)
         self._action_redo.triggered.connect(self._on_redo)
+        self._action_preferences = QAction("&Preferences...", self)
+        self._action_preferences.setShortcut(QKeySequence.StandardKey.Preferences)
+        self._action_preferences.triggered.connect(self._on_preferences)
         edit_menu.addAction(self._action_undo)
         edit_menu.addAction(self._action_redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self._action_preferences)
 
         view_menu = menu_bar.addMenu("&View")
         self._action_fit = QAction("&Fit to View", self)
@@ -405,7 +417,9 @@ class MainWindow(QMainWindow):
         except DxfImportError as exc:
             QMessageBox.critical(self, "DXF import failed", str(exc))
             return
-        project = Project(name=path.stem, geometry_layers=layers)
+        project = self._make_new_project()
+        project.name = path.stem
+        project.geometry_layers = layers
         self.set_project(project)
         self.statusBar().showMessage(f"Imported {path.name}", 5000)
 
@@ -546,11 +560,12 @@ class MainWindow(QMainWindow):
         self._do_action("Delete operation", mutate)
 
     def _create_tool_controller_for(self, project: Project) -> ToolController:
+        diameter = self._preferences.default_tool_diameter_mm
         next_number = (
             max((tc.tool_number for tc in project.tool_controllers), default=0) + 1
         )
-        tool = Tool(name=f"{DEFAULT_TOOL_DIAMETER_MM:g}mm endmill", shape=ToolShape.ENDMILL)
-        tool.geometry["diameter"] = DEFAULT_TOOL_DIAMETER_MM
+        tool = Tool(name=f"{diameter:g}mm endmill", shape=ToolShape.ENDMILL)
+        tool.geometry["diameter"] = diameter
         return ToolController(tool_number=next_number, tool=tool)
 
     def _tool_controller_for(self, op: ProfileOp) -> ToolController | None:
@@ -691,3 +706,41 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", str(exc))
             return
         self.statusBar().showMessage(f"Saved {path.name}", 5000)
+
+    # -------------------------------------------------------------- preferences
+
+    def _load_preferences_or_default(self) -> AppPreferences:
+        try:
+            return load_preferences(self._preferences_path)
+        except PreferencesLoadError as exc:
+            # A corrupt prefs file shouldn't keep the app from starting; tell
+            # the user once and proceed with defaults.
+            QMessageBox.warning(
+                self,
+                "Could not load preferences",
+                f"{exc}\n\nFalling back to defaults.",
+            )
+            return AppPreferences()
+
+    def _make_new_project(self) -> Project:
+        return Project(
+            settings=ProjectSettings(
+                chord_tolerance=self._preferences.default_chord_tolerance_mm
+            )
+        )
+
+    def _on_preferences(self) -> None:
+        dialog = PreferencesDialog(self._preferences, self)
+        if dialog.exec() != PreferencesDialog.DialogCode.Accepted:
+            return
+        new_prefs = dialog.result_preferences()
+        try:
+            save_preferences(new_prefs, self._preferences_path)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Could not save preferences",
+                f"{exc}\n\nChanges will apply for this session only.",
+            )
+        self._preferences = new_prefs
+        self._edit_timer.setInterval(new_prefs.edit_coalesce_ms)

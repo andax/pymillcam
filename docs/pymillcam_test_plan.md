@@ -29,8 +29,10 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_engine/test_ir_walker.py` | ~5 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion instructions skipped |
 | `tests/test_core/test_commands.py` | ~8 | Empty stack, push→undo→redo round-trip, new-push clears redo, multi-step done/undone math, clear, no-op push dropped, descriptions track top |
 | `tests/test_ui/test_box_selection.py` | ~9 | direction_from_drag, contained vs crossing matching, inverted box normalisation, arc/point handling, invisible layer skip, empty layer list |
+| `tests/test_core/test_preferences.py` | ~7 | Defaults, save/load round-trip, missing file → defaults, malformed/invalid JSON raises, atomic write |
+| `tests/test_ui/test_preferences_dialog.py` | ~4 | Field population, edits round-trip via result_preferences, stitch field disabled when auto-stitch off, dialog doesn't mutate input |
 
-**Totals: ~179 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~192 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 

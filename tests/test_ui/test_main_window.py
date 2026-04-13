@@ -423,6 +423,30 @@ def test_undo_during_in_progress_edit_reverts_without_recording(
     assert main_window.project.operations == []
 
 
+def test_new_project_inherits_chord_tolerance_from_preferences(
+    main_window: MainWindow,
+) -> None:
+    from pymillcam.core.preferences import AppPreferences
+
+    main_window._preferences = AppPreferences(default_chord_tolerance_mm=0.005)
+    fresh = main_window._make_new_project()
+    assert fresh.settings.chord_tolerance == pytest.approx(0.005)
+
+
+def test_add_profile_uses_tool_diameter_from_preferences(
+    main_window: MainWindow,
+) -> None:
+    from pymillcam.core.preferences import AppPreferences
+
+    main_window._preferences = AppPreferences(default_tool_diameter_mm=6.5)
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    tc = main_window.project.tool_controllers[0]
+    assert tc.tool.geometry["diameter"] == pytest.approx(6.5)
+
+
 def test_load_project_clears_undo_history(
     main_window: MainWindow, tmp_path: Path
 ) -> None:
