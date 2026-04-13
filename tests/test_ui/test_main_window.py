@@ -334,6 +334,111 @@ def test_editing_op_clears_stale_toolpath_preview(main_window: MainWindow) -> No
     assert main_window._viewport._toolpath_preview == []
 
 
+def test_undo_add_profile_removes_op_and_tool_controller(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    assert len(main_window.project.operations) == 1
+    assert len(main_window.project.tool_controllers) == 1
+
+    main_window._action_undo.trigger()
+    assert main_window.project.operations == []
+    assert main_window.project.tool_controllers == []
+    assert main_window._action_undo.isEnabled() is False
+    assert main_window._action_redo.isEnabled() is True
+
+
+def test_redo_replays_add_profile(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    main_window._action_undo.trigger()
+
+    main_window._action_redo.trigger()
+    assert len(main_window.project.operations) == 1
+    assert len(main_window.project.tool_controllers) == 1
+
+
+def test_delete_operation_is_undoable(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op_id = main_window.project.operations[0].id
+    main_window._select_operation_in_tree(op_id)
+
+    main_window._action_delete_operation.trigger()
+    assert main_window.project.operations == []
+
+    main_window._action_undo.trigger()
+    assert len(main_window.project.operations) == 1
+    assert main_window.project.operations[0].id == op_id
+
+
+def test_property_edits_coalesce_into_one_undo_step(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Three rapid edits — should coalesce until the timer fires.
+    main_window._properties._form.cut_depth.setValue(-5.0)
+    main_window._properties._form.cut_depth.setValue(-7.0)
+    main_window._properties._form.cut_depth.setValue(-9.0)
+    # Force the coalesce timer to fire now rather than waiting 400 ms.
+    main_window._commit_pending_edit()
+
+    # One Add Profile + one Edit operation = 2 undo steps to reach empty.
+    main_window._action_undo.trigger()  # undo edit → cut_depth back to -3
+    assert main_window.project.operations[0].cut_depth == -3.0
+    main_window._action_undo.trigger()  # undo add → empty
+    assert main_window.project.operations == []
+
+
+def test_undo_during_in_progress_edit_reverts_without_recording(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    # Mutate but do NOT commit the coalesced edit.
+    main_window._properties._form.cut_depth.setValue(-5.0)
+    assert main_window.project.operations[0].cut_depth == -5.0
+
+    # Undo while the edit is mid-flight: revert to snapshot, no stack push.
+    main_window._action_undo.trigger()
+    assert main_window.project.operations[0].cut_depth == -3.0
+    # Add Profile is still on the undo stack — one more undo empties it.
+    main_window._action_undo.trigger()
+    assert main_window.project.operations == []
+
+
+def test_load_project_clears_undo_history(
+    main_window: MainWindow, tmp_path: Path
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    out = tmp_path / "p.pmc"
+    main_window._save_to(out)
+
+    from pymillcam.io.project_io import load_project
+
+    main_window.set_project(load_project(out))
+    assert not main_window._action_undo.isEnabled()
+    assert not main_window._action_redo.isEnabled()
+
+
 def test_save_and_load_project_round_trip(
     main_window: MainWindow, tmp_path: Path
 ) -> None:

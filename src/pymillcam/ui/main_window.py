@@ -10,9 +10,11 @@ Open Project round-trips the project as JSON.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pymillcam.core.commands import CommandStack
 from pymillcam.core.geometry import GeometryLayer
 from pymillcam.core.operations import (
     GeometryRef,
@@ -68,6 +71,15 @@ class MainWindow(QMainWindow):
         self._project = Project()
         self._project_path: Path | None = None
         self._syncing_selection = False
+        self._stack = CommandStack()
+        # Snapshot taken when an op gets bound to the Properties panel; used as
+        # the 'before' state for any edits that follow until they're committed
+        # by the idle timer below.
+        self._edit_snapshot: dict[str, Any] | None = None
+        self._edit_timer = QTimer(self)
+        self._edit_timer.setSingleShot(True)
+        self._edit_timer.setInterval(400)
+        self._edit_timer.timeout.connect(self._commit_pending_edit)
 
         self._build_viewport()
         self._build_tree_dock()
@@ -190,9 +202,11 @@ class MainWindow(QMainWindow):
         self._action_undo = QAction("&Undo", self)
         self._action_undo.setShortcut(QKeySequence.StandardKey.Undo)
         self._action_undo.setEnabled(False)
+        self._action_undo.triggered.connect(self._on_undo)
         self._action_redo = QAction("&Redo", self)
         self._action_redo.setShortcut(QKeySequence.StandardKey.Redo)
         self._action_redo.setEnabled(False)
+        self._action_redo.triggered.connect(self._on_redo)
         edit_menu.addAction(self._action_undo)
         edit_menu.addAction(self._action_redo)
 
@@ -225,10 +239,15 @@ class MainWindow(QMainWindow):
         self._action_add_profile = QAction("Add &Profile", self)
         self._action_add_profile.setEnabled(False)
         self._action_add_profile.triggered.connect(self._on_add_profile)
+        self._action_delete_operation = QAction("&Delete operation", self)
+        self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
+        self._action_delete_operation.setEnabled(False)
+        self._action_delete_operation.triggered.connect(self._on_delete_operation)
         self._action_generate_gcode = QAction("&Generate G-code", self)
         self._action_generate_gcode.setEnabled(False)
         self._action_generate_gcode.triggered.connect(self._on_generate_gcode)
         ops_menu.addAction(self._action_add_profile)
+        ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_generate_gcode)
 
@@ -245,13 +264,22 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------- project
 
     def set_project(self, project: Project) -> None:
+        """User-facing project load — clears undo history and refits view."""
+        self._stack.clear()
+        self._edit_snapshot = None
+        self._edit_timer.stop()
+        self._replace_project(project, fit=True)
+
+    def _replace_project(self, project: Project, *, fit: bool) -> None:
+        """Drop the current project for a new one; does NOT touch the undo stack."""
         self._project = project
         self._viewport.set_layers(project.geometry_layers)
         self._properties.set_operation(None)
         self._viewport.clear_profile_preview()
         self._viewport.clear_toolpath_preview()
         self._rebuild_tree()
-        self._viewport.fit_to_view()
+        if fit:
+            self._viewport.fit_to_view()
         self._refresh_action_state()
 
     def _refresh_action_state(self) -> None:
@@ -259,6 +287,70 @@ class MainWindow(QMainWindow):
         # "Add Profile" enables only when a geometry entity is selected.
         layer, entity_id = self._viewport.selected
         self._action_add_profile.setEnabled(bool(layer and entity_id))
+        self._action_delete_operation.setEnabled(
+            self._currently_selected_operation() is not None
+        )
+        self._action_undo.setEnabled(self._stack.can_undo)
+        self._action_redo.setEnabled(self._stack.can_redo)
+        self._action_undo.setText(
+            f"&Undo {self._stack.undo_description}"
+            if self._stack.can_undo
+            else "&Undo"
+        )
+        self._action_redo.setText(
+            f"&Redo {self._stack.redo_description}"
+            if self._stack.can_redo
+            else "&Redo"
+        )
+
+    def _do_action(self, description: str, mutator: Callable[[Project], None]) -> None:
+        """Run `mutator(project)` and record the before/after as one stack entry."""
+        # Any pending coalesced edit must commit first, or it would land on
+        # top of this new action and confuse the history.
+        self._commit_pending_edit()
+        before = self._project.model_dump(mode="json")
+        mutator(self._project)
+        after = self._project.model_dump(mode="json")
+        self._stack.push(description, before, after)
+        self._replace_project(self._project, fit=False)
+
+    def _on_undo(self) -> None:
+        # If the user is mid-edit, undo first reverts the in-flight edits to
+        # the snapshot (without recording them) — the natural editor feel.
+        if self._edit_snapshot is not None and (
+            self._project.model_dump(mode="json") != self._edit_snapshot
+        ):
+            self._edit_timer.stop()
+            snapshot = self._edit_snapshot
+            self._edit_snapshot = None
+            self._replace_project(Project.model_validate(snapshot), fit=False)
+            self.statusBar().showMessage("Reverted in-progress edit", 3000)
+            return
+        entry = self._stack.undo()
+        if entry is None:
+            return
+        self._edit_snapshot = None
+        self._replace_project(Project.model_validate(entry.before), fit=False)
+        self.statusBar().showMessage(f"Undo: {entry.description}", 3000)
+
+    def _on_redo(self) -> None:
+        self._commit_pending_edit()
+        entry = self._stack.redo()
+        if entry is None:
+            return
+        self._edit_snapshot = None
+        self._replace_project(Project.model_validate(entry.after), fit=False)
+        self.statusBar().showMessage(f"Redo: {entry.description}", 3000)
+
+    def _commit_pending_edit(self) -> None:
+        self._edit_timer.stop()
+        if self._edit_snapshot is None:
+            return
+        after = self._project.model_dump(mode="json")
+        if after != self._edit_snapshot:
+            self._stack.push("Edit operation", self._edit_snapshot, after)
+            self._edit_snapshot = after
+            self._refresh_action_state()
 
     def _rebuild_tree(self) -> None:
         self._tree.blockSignals(True)
@@ -320,11 +412,15 @@ class MainWindow(QMainWindow):
     def _on_tree_selection_changed(self) -> None:
         if self._syncing_selection:
             return
+        # Switching the bound op flushes any half-finished edits on the
+        # previous one — they belong to that op's history, not the next one's.
+        self._commit_pending_edit()
         items = self._tree.selectedItems()
         if not items:
             self._viewport.set_selected(None, None)
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
+            self._edit_snapshot = None
             self._refresh_action_state()
             return
         ref: _TreeRef = items[0].data(0, Qt.ItemDataRole.UserRole)
@@ -333,15 +429,19 @@ class MainWindow(QMainWindow):
             self._viewport.set_selected(layer_name, entity_id)
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
+            self._edit_snapshot = None
         elif ref and ref[0] == "operation":
             op = self._find_operation(ref[1])
             self._viewport.set_selected(None, None)
             self._properties.set_operation(op, self._tool_controller_for(op) if op else None)
             self._update_profile_preview(op)
+            # Any subsequent property edit will be coalesced against this snapshot.
+            self._edit_snapshot = self._project.model_dump(mode="json")
         else:
             self._viewport.set_selected(None, None)
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
+            self._edit_snapshot = None
         self._refresh_action_state()
 
     def _update_profile_preview(self, op: ProfileOp | None) -> None:
@@ -405,26 +505,39 @@ class MainWindow(QMainWindow):
         layer_name, entity_id = self._viewport.selected
         if not layer_name or not entity_id:
             return
-        tc = self._create_tool_controller()
-        self._project.tool_controllers.append(tc)
-        op = ProfileOp(
-            name=self._next_op_name(),
-            tool_controller_id=tc.tool_number,
-            cut_depth=-3.0,
-            offset_side=OffsetSide.OUTSIDE,
-            geometry_refs=[GeometryRef(layer_name=layer_name, entity_id=entity_id)],
-        )
-        self._project.operations.append(op)
-        self._rebuild_tree()
-        self._select_operation_in_tree(op.id)
-        self._refresh_action_state()
+        new_op_id: dict[str, str] = {}
 
-    def _next_op_name(self) -> str:
-        return f"Profile {len(self._project.operations) + 1}"
+        def mutate(project: Project) -> None:
+            tc = self._create_tool_controller_for(project)
+            project.tool_controllers.append(tc)
+            op = ProfileOp(
+                name=f"Profile {len(project.operations) + 1}",
+                tool_controller_id=tc.tool_number,
+                cut_depth=-3.0,
+                offset_side=OffsetSide.OUTSIDE,
+                geometry_refs=[GeometryRef(layer_name=layer_name, entity_id=entity_id)],
+            )
+            project.operations.append(op)
+            new_op_id["id"] = op.id
 
-    def _create_tool_controller(self) -> ToolController:
+        self._do_action("Add Profile", mutate)
+        if "id" in new_op_id:
+            self._select_operation_in_tree(new_op_id["id"])
+
+    def _on_delete_operation(self) -> None:
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        target_id = op.id
+
+        def mutate(project: Project) -> None:
+            project.operations = [o for o in project.operations if o.id != target_id]
+
+        self._do_action("Delete operation", mutate)
+
+    def _create_tool_controller_for(self, project: Project) -> ToolController:
         next_number = (
-            max((tc.tool_number for tc in self._project.tool_controllers), default=0) + 1
+            max((tc.tool_number for tc in project.tool_controllers), default=0) + 1
         )
         tool = Tool(name=f"{DEFAULT_TOOL_DIAMETER_MM:g}mm endmill", shape=ToolShape.ENDMILL)
         tool.geometry["diameter"] = DEFAULT_TOOL_DIAMETER_MM
@@ -489,6 +602,10 @@ class MainWindow(QMainWindow):
         self._update_profile_preview(self._currently_selected_operation())
         # Edits invalidate any previously generated toolpath.
         self._viewport.clear_toolpath_preview()
+        # Restart the coalesce timer — the actual stack push happens once the
+        # user pauses for `_edit_timer.interval()` ms.
+        if self._edit_snapshot is not None:
+            self._edit_timer.start()
 
     def _currently_selected_operation(self) -> ProfileOp | None:
         for item in self._tree.selectedItems():

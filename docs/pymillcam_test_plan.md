@@ -27,8 +27,9 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_ui/test_viewport.py` | ~16 | Viewport instantiates, set_layers, world↔widget, Y-up, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep, profile preview set/clear, show-toggles preserve state |
 | `tests/test_ui/test_properties_panel.py` | ~9 | Empty placeholder, populate from op, edit→model+signal, multi-pass / chord-override toggles, populate-doesn't-re-emit, tool diameter disabled w/o controller, tool diameter writes back to controller |
 | `tests/test_engine/test_ir_walker.py` | ~5 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion instructions skipped |
+| `tests/test_core/test_commands.py` | ~8 | Empty stack, push→undo→redo round-trip, new-push clears redo, multi-step done/undone math, clear, no-op push dropped, descriptions track top |
 
-**Totals: ~148 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~165 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -139,13 +140,18 @@ Mostly manual; automated coverage is limited to signal/slot smoke tests via pyte
   - [ ] Generate G-code populates the **toolpath preview** (magenta feeds + dashed cyan rapids); editing any op afterwards clears it (it's stale).
   - [ ] View > Show profile preview / Show toolpath preview toggle the overlays without losing the underlying data.
 
-### Step 6 — Undo/redo command infrastructure  ⬜
+### Step 6 — Undo/redo command infrastructure  ✅
 
-- A:
-  - Each command type exposes `do()` / `undo()` round-trip invariant: applying do then undo leaves the Project equal to its starting state (use Pydantic equality).
-  - Command stack: `undo()` moves a command from done→undone, `redo()` reverses.
-  - Multi-step scenarios: 5 commands done, 3 undone, new command clears redo stack.
-- M-V: Ctrl+Z / Ctrl+Shift+Z keyboard shortcuts work in the UI and visibly revert changes in the tree + viewport.
+Implemented as a snapshot-based stack: each entry holds `(description, before_dict, after_dict)` of `Project.model_dump`. Concrete `Command` subclasses can replace this when project size makes whole-state snapshots expensive — public API of `CommandStack` won't change.
+
+- A: `tests/test_core/test_commands.py` — stack invariants, push/undo/redo, redo cleared on new push, multi-step done/undone arithmetic.
+- A: `tests/test_ui/test_main_window.py` — undo Add Profile removes both the op and its ToolController; redo restores; delete operation is undoable; coalesced property edits collapse to one undo step; in-progress edit reverts cleanly without recording; loading a project clears history.
+- **M-V to do**:
+  - [ ] Ctrl+Z / Ctrl+Shift+Z visibly revert in tree + viewport (Add Profile, Delete operation, property edits).
+  - [ ] Edit menu shows the action that will be undone/redone in the label (e.g. "Undo Add Profile").
+  - [ ] Rapid spinbox jiggles count as one undo step, not many (400 ms idle commits the coalesced edit).
+  - [ ] Pressing Ctrl+Z while typing in a field reverts to the bind-time snapshot rather than partial keystrokes.
+  - [ ] Loading a project (File > Open Project) clears Edit menu's undo/redo state.
 
 ### Step 7 — Directional box selection  ⬜
 

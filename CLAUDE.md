@@ -73,7 +73,7 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
 3. ✅ Basic profile toolpath (offset, multi-depth)
 4. ✅ IR + UCCNC post-processor (emits G2/G3 arcs; end-to-end DXF → G-code works)
 5. ✅ Minimal PySide6 window (shell, viewport, tree, properties, G-code output, save/load)
-6. ⬜ Undo/redo command infrastructure
+6. ✅ Undo/redo command infrastructure (snapshot-based stack, Ctrl+Z / Ctrl+Shift+Z, coalesced property edits)
 7. ⬜ Directional box selection
 8. ✅ Project save/load as JSON
 
