@@ -109,8 +109,17 @@ def segments_to_shapely(
             points.extend(_sample_arc(seg, tolerance)[1:])
 
     if closed:
-        if points[0] != points[-1]:
-            points.append(points[0])
+        # Full-circle arcs return to start mathematically but pick up a sub-
+        # picometre residual from floating-point sin/cos. Snap to exact
+        # closure rather than appending a second near-coincident vertex —
+        # Shapely's buffer produces garbage rings if it sees the tiny edge.
+        first = points[0]
+        last = points[-1]
+        gap_sq = (last[0] - first[0]) ** 2 + (last[1] - first[1]) ** 2
+        if gap_sq < 1e-18:  # ~1e-9 mm
+            points[-1] = first
+        elif first != last:
+            points.append(first)
         return Polygon(points)
     return LineString(points)
 

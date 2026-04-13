@@ -44,9 +44,10 @@ class ProjectSettings(BaseModel):
     safe_height: float = 15.0
     clearance_plane: float = 3.0
     # Max chord sag (mm) used when arcs must be collapsed to straight-line
-    # segments for G-code output. 0.05 mm is a reasonable default for wood/
-    # plastic; tighten to 0.01 mm or below for metal finishing.
-    chord_tolerance: float = 0.05
+    # segments for G-code output. 0.02 mm balances visual smoothness against
+    # G-code length; tighten to 0.01 mm or below for metal finishing, loosen
+    # to 0.05 mm for very rough cuts where every byte counts.
+    chord_tolerance: float = 0.02
 
 
 class Project(BaseModel):

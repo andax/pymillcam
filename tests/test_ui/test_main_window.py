@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt
 from pytestqt.qtbot import QtBot
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
+from pymillcam.core.operations import GeometryRef, ProfileOp
 from pymillcam.core.project import Project
 from pymillcam.core.segments import ArcSegment, LineSegment
 from pymillcam.ui.main_window import MainWindow
@@ -96,6 +97,18 @@ def test_mouse_move_updates_status_bar(main_window: MainWindow, qtbot: QtBot) ->
     assert "-3.250" in main_window._coord_label.text()
 
 
+def _layer_items(main_window: MainWindow) -> list:
+    items = []
+    for i in range(main_window._tree.topLevelItemCount()):
+        item = main_window._tree.topLevelItem(i)
+        if item is None:
+            continue
+        ref = item.data(0, Qt.ItemDataRole.UserRole)
+        if ref and ref[0] == "layer":
+            items.append(item)
+    return items
+
+
 def test_load_dxf_populates_project_tree_and_viewport(
     main_window: MainWindow, tmp_path: Path
 ) -> None:
@@ -106,12 +119,10 @@ def test_load_dxf_populates_project_tree_and_viewport(
         "Outline",
         "Holes",
     }
-    # Tree: one top-level item per layer, each with one entity child.
-    assert main_window._tree.topLevelItemCount() == 2
-    for i in range(2):
-        layer_item = main_window._tree.topLevelItem(i)
-        assert layer_item is not None
-        assert layer_item.childCount() == 1
+    layer_items = _layer_items(main_window)
+    assert len(layer_items) == 2
+    for item in layer_items:
+        assert item.childCount() == 1
 
 
 def test_set_project_with_known_layout_populates_tree_counts(
@@ -127,10 +138,7 @@ def test_set_project_with_known_layout_populates_tree_counts(
     layer_b = GeometryLayer(name="B", entities=[GeometryEntity(point=(5, 5))])
     main_window.set_project(Project(geometry_layers=[layer_a, layer_b]))
 
-    assert main_window._tree.topLevelItemCount() == 2
-    a_item = main_window._tree.topLevelItem(0)
-    b_item = main_window._tree.topLevelItem(1)
-    assert a_item is not None and b_item is not None
+    a_item, b_item = _layer_items(main_window)
     assert a_item.childCount() == 2
     assert b_item.childCount() == 1
     assert "(2)" in a_item.text(0)
@@ -181,6 +189,173 @@ def test_viewport_clearing_selection_clears_tree(main_window: MainWindow) -> Non
 
     main_window._viewport.selection_changed.emit(None, None)
     assert main_window._tree.selectedItems() == []
+
+
+def _project_with_one_circle() -> tuple[Project, GeometryEntity]:
+    entity = GeometryEntity(
+        segments=[
+            ArcSegment(center=(0, 0), radius=25, start_angle_deg=0, sweep_deg=360),
+        ],
+        closed=True,
+    )
+    layer = GeometryLayer(name="Holes", entities=[entity])
+    return Project(name="circle", geometry_layers=[layer]), entity
+
+
+def _simulate_viewport_click(
+    main_window: MainWindow, layer_name: str, entity_id: str
+) -> None:
+    """Replay what Viewport.mousePressEvent does on a hit — state + signal."""
+    main_window._viewport.set_selected(layer_name, entity_id)
+    main_window._viewport.selection_changed.emit(layer_name, entity_id)
+
+
+def test_add_profile_requires_selected_entity(main_window: MainWindow) -> None:
+    project, _ = _project_with_one_circle()
+    main_window.set_project(project)
+    assert not main_window._action_add_profile.isEnabled()
+
+
+def test_add_profile_creates_op_and_default_tool_controller(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    assert main_window._action_add_profile.isEnabled()
+
+    main_window._action_add_profile.trigger()
+
+    ops = main_window.project.operations
+    assert len(ops) == 1
+    op = ops[0]
+    assert isinstance(op, ProfileOp)
+    assert op.geometry_refs == [GeometryRef(layer_name="Holes", entity_id=entity.id)]
+    assert op.tool_controller_id is not None
+    assert main_window.project.tool_controllers, "default ToolController not created"
+    assert main_window._action_generate_gcode.isEnabled()
+
+
+def test_generate_gcode_fills_output_pane(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+
+    main_window._action_generate_gcode.trigger()
+    text = main_window._output.toPlainText()
+    assert "G21 G90 G94 G17" in text  # preamble
+    assert "M30" in text  # program end
+
+
+def test_editing_op_in_properties_panel_updates_regenerated_gcode(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+
+    # Select op so the properties panel binds to it.
+    main_window._select_operation_in_tree(op.id)
+    main_window._properties._form.cut_depth.setValue(-9.0)
+    assert op.cut_depth == -9.0
+
+    main_window._action_generate_gcode.trigger()
+    first = main_window._output.toPlainText()
+    main_window._properties._form.cut_depth.setValue(-1.0)
+    main_window._action_generate_gcode.trigger()
+    second = main_window._output.toPlainText()
+    assert first != second  # cache-free regeneration
+
+
+def test_each_add_profile_creates_its_own_tool_controller(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    # Selecting the new op clears the viewport selection (real users would
+    # re-click the entity before adding the next profile).
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    assert len(main_window.project.tool_controllers) == 2
+    nums = sorted(tc.tool_number for tc in main_window.project.tool_controllers)
+    assert nums == [1, 2]
+
+
+def test_selecting_op_pushes_profile_preview_to_viewport(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    # Outside offset on a 50 mm circle with 3 mm tool gives a non-empty preview.
+    assert main_window._viewport._profile_preview, "expected preview segments"
+
+
+def test_editing_op_updates_profile_preview(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    before = list(main_window._viewport._profile_preview)
+    main_window._properties._form.tool_diameter.setValue(10.0)
+    after = list(main_window._viewport._profile_preview)
+    assert before != after, "tool diameter change should re-compute preview"
+
+
+def test_generate_gcode_pushes_toolpath_preview(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    main_window._action_generate_gcode.trigger()
+    assert main_window._viewport._toolpath_preview, "expected walked toolpath moves"
+
+
+def test_editing_op_clears_stale_toolpath_preview(main_window: MainWindow) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    main_window._action_generate_gcode.trigger()
+    assert main_window._viewport._toolpath_preview
+    main_window._properties._form.cut_depth.setValue(-7.0)
+    assert main_window._viewport._toolpath_preview == []
+
+
+def test_save_and_load_project_round_trip(
+    main_window: MainWindow, tmp_path: Path
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    out = tmp_path / "round_trip.pmc"
+    main_window._save_to(out)
+    assert out.exists()
+
+    fresh = MainWindow()
+    try:
+        from pymillcam.io.project_io import load_project
+
+        fresh.set_project(load_project(out))
+        assert len(fresh.project.operations) == 1
+        assert (
+            fresh.project.operations[0].geometry_refs[0].entity_id == entity.id
+        )
+    finally:
+        fresh.deleteLater()
 
 
 def test_exit_action_closes_window(main_window: MainWindow, qtbot: QtBot) -> None:

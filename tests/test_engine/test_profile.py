@@ -13,6 +13,7 @@ from pymillcam.core.tools import CuttingData, Tool, ToolController
 from pymillcam.engine.ir import MoveType
 from pymillcam.engine.profile import (
     ProfileGenerationError,
+    _offset_contour,
     _z_levels,
     generate_profile_toolpath,
 )
@@ -296,6 +297,26 @@ def test_full_circle_arc_emits_one_arc_move_per_pass() -> None:
     tp = generate_profile_toolpath(op, project)
     arc_moves = [i for i in tp.instructions if i.type is MoveType.ARC_CCW]
     assert len(arc_moves) == 2  # 2 passes, each a single full-circle arc
+
+
+def test_outside_offset_on_full_circle_keeps_every_vertex_outside() -> None:
+    """Regression: full-circle arcs used to leave a near-coincident pair at the
+    polygon close, which Shapely's buffer turned into one wrong vertex inside
+    the original radius. Every offset vertex should be exactly r + tool_radius
+    from the centre."""
+    entity = GeometryEntity(
+        segments=[ArcSegment(center=(0, 0), radius=25, start_angle_deg=0, sweep_deg=360)],
+        closed=True,
+    )
+    segs = _offset_contour(
+        entity, radius=1.5, side=OffsetSide.OUTSIDE, chord_tolerance=0.05
+    )
+    # Tool is 3 mm → outside offset radius is 25 + 1.5 = 26.5 mm. Allow a
+    # small slack for chord-vs-arc geometry.
+    for seg in segs:
+        sx, sy = seg.start
+        r = math.hypot(sx, sy)
+        assert 26.4 <= r <= 26.6, f"vertex {(sx, sy)} at r={r:.4f} is off"
 
 
 def test_chord_tolerance_cascades_from_operation() -> None:

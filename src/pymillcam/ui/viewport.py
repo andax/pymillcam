@@ -27,7 +27,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
-from pymillcam.core.segments import ArcSegment, LineSegment
+from pymillcam.core.segments import ArcSegment, LineSegment, Segment
+from pymillcam.engine.ir_walker import MoveKind, WalkedMove
 
 # Px per mm — chosen so that a ~400 mm part fits comfortably in an 800 px wide
 # viewport before the user touches zoom.
@@ -48,6 +49,9 @@ COLOR_AXIS_Y = QColor(80, 160, 80)
 COLOR_GEOMETRY = QColor(230, 230, 230)
 COLOR_POINT = QColor(240, 200, 80)
 COLOR_SELECTED = QColor(90, 180, 255)
+COLOR_PROFILE_PREVIEW = QColor(255, 160, 60)
+COLOR_TOOLPATH_FEED = QColor(220, 90, 200)
+COLOR_TOOLPATH_RAPID = QColor(80, 200, 220)
 
 # How close (in widget pixels) the click must be to an entity to hit it.
 HIT_TEST_TOLERANCE_PX = 5.0
@@ -73,6 +77,10 @@ class Viewport(QWidget):
         self._pan_start_origin: QPointF = QPointF()
         self._selected_layer: str | None = None
         self._selected_entity: str | None = None
+        self._profile_preview: list[Segment] = []
+        self._toolpath_preview: list[WalkedMove] = []
+        self._show_profile_preview = True
+        self._show_toolpath_preview = True
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -90,6 +98,30 @@ class Viewport(QWidget):
         """Programmatic selection change. Does not emit `selection_changed`."""
         self._selected_layer = layer_name
         self._selected_entity = entity_id
+        self.update()
+
+    def set_profile_preview(self, segments: list[Segment]) -> None:
+        self._profile_preview = list(segments)
+        self.update()
+
+    def clear_profile_preview(self) -> None:
+        self._profile_preview = []
+        self.update()
+
+    def set_toolpath_preview(self, moves: list[WalkedMove]) -> None:
+        self._toolpath_preview = list(moves)
+        self.update()
+
+    def clear_toolpath_preview(self) -> None:
+        self._toolpath_preview = []
+        self.update()
+
+    def set_show_profile_preview(self, visible: bool) -> None:
+        self._show_profile_preview = visible
+        self.update()
+
+    def set_show_toolpath_preview(self, visible: bool) -> None:
+        self._show_toolpath_preview = visible
         self.update()
 
     @property
@@ -204,6 +236,10 @@ class Viewport(QWidget):
             self._draw_grid(painter)
             self._draw_axes(painter)
             self._draw_geometry(painter)
+            if self._show_toolpath_preview and self._toolpath_preview:
+                self._draw_toolpath_preview(painter)
+            if self._show_profile_preview and self._profile_preview:
+                self._draw_profile_preview(painter)
         finally:
             painter.end()
 
@@ -310,6 +346,18 @@ class Viewport(QWidget):
         painter.drawLine(QPointF(c.x() - 4, c.y()), QPointF(c.x() + 4, c.y()))
         painter.drawLine(QPointF(c.x(), c.y() - 4), QPointF(c.x(), c.y() + 4))
         painter.setPen(prev_pen)
+
+    def _draw_profile_preview(self, painter: QPainter) -> None:
+        painter.setPen(QPen(COLOR_PROFILE_PREVIEW, 2.0))
+        for seg in self._profile_preview:
+            self._draw_segment(painter, seg)
+
+    def _draw_toolpath_preview(self, painter: QPainter) -> None:
+        feed_pen = QPen(COLOR_TOOLPATH_FEED, 1.6)
+        rapid_pen = QPen(COLOR_TOOLPATH_RAPID, 1.0, Qt.PenStyle.DashLine)
+        for move in self._toolpath_preview:
+            painter.setPen(feed_pen if move.kind is MoveKind.FEED else rapid_pen)
+            self._draw_segment(painter, move.segment)
 
     def _draw_segment(self, painter: QPainter, seg: LineSegment | ArcSegment) -> None:
         if isinstance(seg, LineSegment):

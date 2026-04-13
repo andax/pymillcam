@@ -36,6 +36,27 @@ class ProfileGenerationError(Exception):
     """Raised when a ProfileOp cannot be converted into a toolpath."""
 
 
+def compute_profile_preview(op: ProfileOp, project: Project) -> list[Segment]:
+    """Return the 2D plan-view path the cutter centre will follow.
+
+    No Z passes, no lead-in / lead-out, no rapids — just the offset
+    contour. Used by the UI to show a live preview as the user edits
+    operation parameters.
+    """
+    tool_controller = _resolve_tool_controller(op, project)
+    chord_tolerance = (
+        op.chord_tolerance
+        if op.chord_tolerance is not None
+        else project.settings.chord_tolerance
+    )
+    tool_radius = float(tool_controller.tool.geometry["diameter"]) / 2.0
+    out: list[Segment] = []
+    for ref in op.geometry_refs:
+        entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
+        out.extend(_offset_contour(entity, tool_radius, op.offset_side, chord_tolerance))
+    return out
+
+
 def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
     """Generate an IR Toolpath for a single ProfileOp within the given Project."""
     tool_controller = _resolve_tool_controller(op, project)

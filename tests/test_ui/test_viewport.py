@@ -205,6 +205,22 @@ def test_angle_within_sweep_cw_arc() -> None:
     assert not _angle_within_sweep(45, cw_quarter)
 
 
+def test_set_profile_preview_then_clear(viewport: Viewport) -> None:
+    viewport.set_profile_preview([LineSegment(start=(0, 0), end=(10, 0))])
+    assert viewport._profile_preview
+    viewport.clear_profile_preview()
+    assert viewport._profile_preview == []
+
+
+def test_show_toggles_do_not_drop_state(viewport: Viewport) -> None:
+    viewport.set_profile_preview([LineSegment(start=(0, 0), end=(10, 0))])
+    viewport.set_show_profile_preview(False)
+    # Hiding doesn't clear — re-showing should reveal the same data.
+    assert viewport._profile_preview
+    viewport.set_show_profile_preview(True)
+    assert viewport._profile_preview
+
+
 def test_mouse_position_signal_fires_on_move(viewport: Viewport, qtbot: QtBot) -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QMouseEvent

@@ -23,10 +23,12 @@ Run via `uv run pytest`. Current count and coverage:
 | `tests/test_io/test_project_io.py` | ~8 | Save/load round-trip, string vs Path, pretty vs compact, error paths |
 | `tests/test_engine/test_profile.py` | ~20 | Z-level computation, inside/outside/on-line offsets, stepdown cascade, arc IR emission (CW/CCW), chord_tolerance cascade |
 | `tests/test_post/test_uccnc.py` | ~18 | Individual G-code translations, feed-rate modality, coordinate formatting, end-to-end DXF → G-code with arcs preserved |
-| `tests/test_ui/test_main_window.py` | ~14 | Main window chrome, status-bar coord readout, DXF load → project/tree/viewport, tree↔viewport selection sync |
-| `tests/test_ui/test_viewport.py` | ~14 | Viewport instantiates, set_layers with mixed content, world↔widget round-trip, Y-up convention, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep |
+| `tests/test_ui/test_main_window.py` | ~24 | Chrome, status-bar, DXF load, tree↔viewport sync, Add Profile (per-op tool controller), Generate G-code, properties edit→regen, save/load, profile preview live update, toolpath preview after generate, edit invalidates stale toolpath |
+| `tests/test_ui/test_viewport.py` | ~16 | Viewport instantiates, set_layers, world↔widget, Y-up, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep, profile preview set/clear, show-toggles preserve state |
+| `tests/test_ui/test_properties_panel.py` | ~9 | Empty placeholder, populate from op, edit→model+signal, multi-pass / chord-override toggles, populate-doesn't-re-emit, tool diameter disabled w/o controller, tool diameter writes back to controller |
+| `tests/test_engine/test_ir_walker.py` | ~5 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion instructions skipped |
 
-**Totals: ~122 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: ~148 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
 
 ### Critical invariants the suite guards against regression
 
@@ -37,6 +39,7 @@ Any change that breaks these should trip a test. If not, add the test.
 3. Inch-unit DXF files scale every coordinate (including bulge-derived arc centers/radii) by 25.4.
 4. `ProfileOp.chord_tolerance` overrides `ProjectSettings.chord_tolerance` (cascade direction preserved).
 5. Project JSON round-trip preserves arc segments as `ArcSegment`, not chord approximations.
+6. Full-circle arcs through `segments_to_shapely` close exactly (no sub-picometre residual edge), so `Polygon.buffer` produces a clean offset ring with every vertex at the expected radius.
 
 ## Manual verification log
 
@@ -121,12 +124,20 @@ Mostly manual; automated coverage is limited to signal/slot smoke tests via pyte
   an opt-in stitch-on-import) before such DXFs can be profiled with one
   selection. Users with `LWPOLYLINE`/`POLYLINE` DXFs are unaffected.
 
-**Sub-commit 4 — Selection + profile op + G-code output**
-- A: "Add Profile" action constructs a ProfileOp with expected defaults.
-- M-V:
-  - [ ] Click-select an entity in the viewport, then Operations > Add Profile, then trigger Generate G-code → output pane shows G-code.
-  - [ ] Saving the project via File > Save writes a .pmc file that `load_project` can read back.
-  - [ ] Re-generating G-code after editing the op parameters produces updated output (no stale cache).
+**Sub-commit 4 — Selection + profile op + G-code output + properties + save/load**  ✅
+- A: `tests/test_ui/test_main_window.py` — Add Profile creates op + default ToolController, Generate G-code fills output, edit-then-regen produces different output (no stale cache), Save→Load round-trip.
+- A: `tests/test_ui/test_properties_panel.py` — empty placeholder, fields populate from op, edits update model + emit signal, multi-pass / chord-override toggles, populate doesn't re-emit.
+- **M-V to do**:
+  - [ ] Click-select an entity → Operations > Add Profile → an "Operations" group appears in the tree with a "Profile 1 [profile]" leaf.
+  - [ ] Selecting the new op shows its fields in the right-side Properties dock.
+  - [ ] Operations > Generate G-code fills the bottom output pane with G-code starting `G21 G90 G94 G17`.
+  - [ ] Editing the cut depth (or any field) and re-generating shows a different G-code body.
+  - [ ] File > Save As writes a .pmc file; closing and File > Open Project on it restores the same tree, ops, and viewport content.
+  - [ ] An entity's first ProfileOp action also creates a default 3 mm endmill ToolController in the project; each subsequent Add Profile gets its own ToolController with the next tool number.
+  - [ ] Selecting an op shows its tool diameter in the Properties panel; editing it changes the live profile preview.
+  - [ ] Live **profile preview** (orange polyline) appears the moment an op is selected and updates with every property edit. ON_LINE just traces the source contour; OUTSIDE / INSIDE show the offset by tool radius. Failing offsets (e.g. inside larger than feature) blank the preview without a popup.
+  - [ ] Generate G-code populates the **toolpath preview** (magenta feeds + dashed cyan rapids); editing any op afterwards clears it (it's stale).
+  - [ ] View > Show profile preview / Show toolpath preview toggle the overlays without losing the underlying data.
 
 ### Step 6 — Undo/redo command infrastructure  ⬜
 
