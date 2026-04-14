@@ -258,10 +258,13 @@ class Viewport(QWidget):
             self._draw_grid(painter)
             self._draw_axes(painter)
             self._draw_geometry(painter)
-            if self._show_toolpath_preview and self._toolpath_preview:
-                self._draw_toolpath_preview(painter)
+            # Draw the profile preview first, then the G-code toolpath on top
+            # — the toolpath reflects the actual generated output, so it
+            # should win when both layers are visible.
             if self._show_profile_preview and self._profile_preview:
                 self._draw_profile_preview(painter)
+            if self._show_toolpath_preview and self._toolpath_preview:
+                self._draw_toolpath_preview(painter)
             if self._dragging_box:
                 self._draw_drag_box(painter)
         finally:
