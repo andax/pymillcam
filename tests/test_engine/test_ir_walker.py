@@ -57,6 +57,21 @@ def test_arc_cw_full_circle_returns_signed_360() -> None:
     assert math.isclose(arc.radius, 10.0)
 
 
+def test_helical_arc_projects_to_planar_xy_arc() -> None:
+    """An ARC with a Z endpoint traces a helix in 3D; the XY walker drops
+    the Z component so the viewport sees a plain 2D arc footprint."""
+    moves = walk_toolpath([
+        IRInstruction(type=MoveType.RAPID, x=10, y=0),
+        IRInstruction(type=MoveType.ARC_CCW, x=0, y=10, z=-2, i=-10, j=0, f=1200),
+    ])
+    assert len(moves) == 1
+    arc = moves[0].segment
+    assert isinstance(arc, ArcSegment)
+    assert arc.center == (0.0, 0.0)
+    assert math.isclose(arc.radius, 10.0)
+    assert arc.sweep_deg == 90.0
+
+
 def test_non_motion_instructions_are_skipped() -> None:
     moves = walk_toolpath([
         IRInstruction(type=MoveType.SPINDLE_ON, s=18000),

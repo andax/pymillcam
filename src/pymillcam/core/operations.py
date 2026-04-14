@@ -53,9 +53,13 @@ class GeometryRef(BaseModel):
 
 
 class LeadConfig(BaseModel):
+    # ARC is the safer default — it plunges genuinely off-path, so the entry
+    # witness mark lands in air rather than on the cut edge. TANGENT and
+    # DIRECT are available for cases where the arc doesn't fit or isn't wanted.
+    # `length` is the arc length (for ARC) or line length (for TANGENT). For
+    # ARC, the derived radius is length × 2/π (quarter-arc geometry).
     style: LeadStyle = LeadStyle.ARC
     length: float = 2.0
-    radius: float = 2.0
 
 
 class TabConfig(BaseModel):
@@ -68,7 +72,10 @@ class TabConfig(BaseModel):
 
 
 class RampConfig(BaseModel):
-    strategy: RampStrategy = RampStrategy.HELICAL
+    # LINEAR = on-contour ramp (profile default). HELICAL makes sense for
+    # pockets, which have clearance area for a spiral; PLUNGE is the fallback
+    # for center-cutting bits or pre-drilled starter holes.
+    strategy: RampStrategy = RampStrategy.LINEAR
     angle_deg: float = 3.0
     radius: float = 1.0
 

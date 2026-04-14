@@ -12,7 +12,15 @@ from pathlib import Path
 import ezdxf
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
-from pymillcam.core.operations import GeometryRef, OffsetSide, ProfileOp
+from pymillcam.core.operations import (
+    GeometryRef,
+    LeadConfig,
+    LeadStyle,
+    OffsetSide,
+    ProfileOp,
+    RampConfig,
+    RampStrategy,
+)
 from pymillcam.core.project import Project
 from pymillcam.core.segments import ArcSegment, LineSegment
 from pymillcam.core.tools import Tool, ToolController
@@ -84,6 +92,23 @@ def test_arc_cw_emits_g2_with_ij() -> None:
 def test_arc_ccw_emits_g3_with_ij() -> None:
     out = _post([IRInstruction(type=MoveType.ARC_CCW, x=0.0, y=10.0, i=-10.0, j=0.0, f=1200.0)])
     assert "G3 X0 Y10 I-10 J0 F1200" in out
+
+
+def test_helical_arc_emits_g3_with_z() -> None:
+    """An ARC_CCW with a Z endpoint is a helical move — the post should
+    include Z in the output so the controller interpolates depth through
+    the arc."""
+    out = _post([IRInstruction(
+        type=MoveType.ARC_CCW, x=0.0, y=10.0, z=-2.0, i=-10.0, j=0.0, f=1200.0
+    )])
+    assert "G3 X0 Y10 Z-2 I-10 J0 F1200" in out
+
+
+def test_helical_arc_cw_emits_g2_with_z() -> None:
+    out = _post([IRInstruction(
+        type=MoveType.ARC_CW, x=5.0, y=5.0, z=-1.5, i=0.0, j=-5.0, f=800.0
+    )])
+    assert "G2 X5 Y5 Z-1.5 I0 J-5 F800" in out
 
 
 def test_spindle_on_with_rpm() -> None:
@@ -160,6 +185,9 @@ def test_end_to_end_dxf_to_gcode_has_arcs_for_circular_contour(tmp_path: Path) -
         cut_depth=-2.0,
         stepdown=1.0,
         offset_side=OffsetSide.ON_LINE,  # preserve arc
+        lead_in=LeadConfig(style=LeadStyle.DIRECT),
+        lead_out=LeadConfig(style=LeadStyle.DIRECT),
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
     )
     project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
     tp = generate_profile_toolpath(op, project)
@@ -172,10 +200,11 @@ def test_end_to_end_dxf_to_gcode_has_arcs_for_circular_contour(tmp_path: Path) -
     # Tool change and spindle commands emitted.
     assert "T1 M6" in gcode
     assert "M3 S18000" in gcode
-    # Two full-circle arcs (one per Z pass), no discretized G1 chords along them.
+    # Two full-circle arcs (one per Z pass) with PLUNGE ramp — no
+    # discretized G1 chords along them.
     assert gcode.count("G3") == 2
     # I/J refer to arc center relative to start — for a circle starting at
-    # (35, 25) with center (25, 25), that's I=-10 J=0.
+    # (35, 25) with centre (25, 25), that's I=-10 J=0.
     assert "I-10 J0" in gcode
 
 
@@ -207,6 +236,9 @@ def test_end_to_end_rectangle_outside_profile_rounds_corners_with_arcs(
         cut_depth=-2.0,
         stepdown=1.0,
         offset_side=OffsetSide.OUTSIDE,
+        lead_in=LeadConfig(style=LeadStyle.DIRECT),
+        lead_out=LeadConfig(style=LeadStyle.DIRECT),
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
     )
     project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
     tp = generate_profile_toolpath(op, project)
@@ -247,6 +279,9 @@ def test_end_to_end_arc_ij_relative_to_start(tmp_path: Path) -> None:
         cut_depth=-1.0,
         stepdown=1.0,
         offset_side=OffsetSide.ON_LINE,
+        lead_in=LeadConfig(style=LeadStyle.DIRECT),
+        lead_out=LeadConfig(style=LeadStyle.DIRECT),
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
     )
     project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
     tp = generate_profile_toolpath(op, project)

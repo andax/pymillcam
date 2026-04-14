@@ -8,7 +8,15 @@ from __future__ import annotations
 import pytest
 from pytestqt.qtbot import QtBot
 
-from pymillcam.core.operations import MillingDirection, OffsetSide, ProfileOp
+from pymillcam.core.operations import (
+    LeadConfig,
+    LeadStyle,
+    MillingDirection,
+    OffsetSide,
+    ProfileOp,
+    RampConfig,
+    RampStrategy,
+)
 from pymillcam.core.tools import Tool, ToolController
 from pymillcam.ui.properties_panel import PropertiesPanel
 
@@ -111,3 +119,66 @@ def test_editing_tool_diameter_writes_back_to_tool_controller(
     panel.set_operation(ProfileOp(name="op"), tool_controller=tc)
     panel._form.tool_diameter.setValue(6.5)
     assert tc.tool.geometry["diameter"] == 6.5
+
+
+def test_lead_fields_populate_from_op(panel: PropertiesPanel) -> None:
+    op = ProfileOp(
+        name="op",
+        lead_in=LeadConfig(style=LeadStyle.TANGENT, length=3.5),
+        lead_out=LeadConfig(style=LeadStyle.ARC, length=2.5),
+    )
+    panel.set_operation(op)
+    assert panel._form.lead_in_style.currentText() == "tangent"
+    assert panel._form.lead_in_length.value() == pytest.approx(3.5)
+    assert panel._form.lead_out_style.currentText() == "arc"
+    assert panel._form.lead_out_length.value() == pytest.approx(2.5)
+
+
+def test_editing_lead_style_writes_back_to_op(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = ProfileOp(name="op", lead_in=LeadConfig(style=LeadStyle.ARC))
+    panel.set_operation(op)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._form.lead_in_style.setCurrentText("direct")
+    assert op.lead_in.style is LeadStyle.DIRECT
+
+
+def test_editing_lead_length_writes_back_to_op(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = ProfileOp(name="op")
+    panel.set_operation(op)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._form.lead_out_length.setValue(7.25)
+    assert op.lead_out.length == pytest.approx(7.25)
+
+
+def test_ramp_fields_populate_from_op(panel: PropertiesPanel) -> None:
+    op = ProfileOp(
+        name="op",
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE, angle_deg=5.0),
+    )
+    panel.set_operation(op)
+    assert panel._form.ramp_strategy.currentText() == "plunge"
+    assert panel._form.ramp_angle.value() == pytest.approx(5.0)
+
+
+def test_editing_ramp_angle_writes_back_to_op(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = ProfileOp(name="op")
+    panel.set_operation(op)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._form.ramp_angle.setValue(2.5)
+    assert op.ramp.angle_deg == pytest.approx(2.5)
+
+
+def test_editing_ramp_strategy_writes_back_to_op(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = ProfileOp(name="op", ramp=RampConfig(strategy=RampStrategy.LINEAR))
+    panel.set_operation(op)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._form.ramp_strategy.setCurrentText("plunge")
+    assert op.ramp.strategy is RampStrategy.PLUNGE
