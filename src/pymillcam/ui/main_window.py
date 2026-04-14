@@ -35,6 +35,7 @@ from pymillcam.core.geometry import GeometryLayer
 from pymillcam.core.operations import (
     GeometryRef,
     OffsetSide,
+    PocketOp,
     ProfileOp,
 )
 from pymillcam.core.path_stitching import stitch_entities
@@ -47,6 +48,11 @@ from pymillcam.core.preferences import (
 from pymillcam.core.project import Project, ProjectSettings
 from pymillcam.core.tools import Tool, ToolController, ToolShape
 from pymillcam.engine.ir_walker import walk_toolpath
+from pymillcam.engine.pocket import (
+    PocketGenerationError,
+    compute_pocket_preview,
+    generate_pocket_toolpath,
+)
 from pymillcam.engine.profile import (
     ProfileGenerationError,
     compute_profile_preview,
@@ -264,6 +270,10 @@ class MainWindow(QMainWindow):
         self._action_add_profile.setShortcut("Ctrl+P")
         self._action_add_profile.setEnabled(False)
         self._action_add_profile.triggered.connect(self._on_add_profile)
+        self._action_add_pocket = QAction("Add Poc&ket", self)
+        self._action_add_pocket.setShortcut("Ctrl+K")
+        self._action_add_pocket.setEnabled(False)
+        self._action_add_pocket.triggered.connect(self._on_add_pocket)
         self._action_delete_operation = QAction("&Delete operation", self)
         self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
         self._action_delete_operation.setEnabled(False)
@@ -275,6 +285,7 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_join_paths)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_profile)
+        ops_menu.addAction(self._action_add_pocket)
         ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_generate_gcode)
@@ -325,6 +336,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self._action_join_paths)
         toolbar.addAction(self._action_add_profile)
+        toolbar.addAction(self._action_add_pocket)
         toolbar.addAction(self._action_delete_operation)
         toolbar.addSeparator()
         toolbar.addAction(self._action_generate_gcode)
@@ -362,8 +374,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_action_state(self) -> None:
         self._action_generate_gcode.setEnabled(bool(self._project.operations))
-        # "Add Profile" enables when at least one geometry entity is selected.
+        # "Add Profile" / "Add Pocket" enable when a geometry entity is
+        # selected. (Pocket needs a closed boundary; the engine will
+        # reject non-closed selections at generate time.)
         self._action_add_profile.setEnabled(bool(self._viewport.selection))
+        self._action_add_pocket.setEnabled(bool(self._viewport.selection))
         # "Join paths" needs ≥ 2 selected entities to be meaningful.
         self._action_join_paths.setEnabled(len(self._viewport.selection) >= 2)
         self._action_delete_operation.setEnabled(
@@ -521,7 +536,7 @@ class MainWindow(QMainWindow):
             self._properties.set_operation(
                 op, self._tool_controller_for(op) if op else None
             )
-            self._update_profile_preview(op)
+            self._update_operation_preview(op)
             self._edit_snapshot = self._project.model_dump(mode="json")
         else:
             self._properties.set_operation(None)
@@ -529,20 +544,30 @@ class MainWindow(QMainWindow):
             self._edit_snapshot = None
         self._refresh_action_state()
 
-    def _update_profile_preview(self, op: ProfileOp | None) -> None:
+    def _update_operation_preview(
+        self, op: ProfileOp | PocketOp | None
+    ) -> None:
         if op is None:
             self._viewport.clear_profile_preview()
             return
         try:
-            preview = compute_profile_preview(op, self._project)
-        except (ProfileGenerationError, ValueError):
+            if isinstance(op, ProfileOp):
+                preview = compute_profile_preview(op, self._project)
+            elif isinstance(op, PocketOp):
+                preview = compute_pocket_preview(op, self._project)
+            else:
+                self._viewport.clear_profile_preview()
+                return
+        except (ProfileGenerationError, PocketGenerationError, ValueError):
             # Live preview should never block editing — failures (e.g. an inside
             # offset that swallows the geometry) just blank the overlay.
             self._viewport.clear_profile_preview()
             return
         self._viewport.set_profile_preview(preview)
 
-    def _find_operation(self, operation_id: str) -> ProfileOp | None:
+    def _find_operation(
+        self, operation_id: str
+    ) -> ProfileOp | PocketOp | None:
         return next(
             (op for op in self._project.operations if op.id == operation_id), None
         )
@@ -641,6 +666,34 @@ class MainWindow(QMainWindow):
         if len(new_op_ids) == 1:
             self._select_operation_in_tree(new_op_ids[0])
 
+    def _on_add_pocket(self) -> None:
+        targets = list(self._viewport.selection)
+        if not targets:
+            return
+        new_op_ids: list[str] = []
+        description = (
+            "Add Pocket" if len(targets) == 1 else f"Add {len(targets)} Pockets"
+        )
+
+        def mutate(project: Project) -> None:
+            tc = self._create_tool_controller_for(project)
+            project.tool_controllers.append(tc)
+            for layer_name, entity_id in targets:
+                op = PocketOp(
+                    name=f"Pocket {len(project.operations) + 1}",
+                    tool_controller_id=tc.tool_number,
+                    cut_depth=-3.0,
+                    geometry_refs=[
+                        GeometryRef(layer_name=layer_name, entity_id=entity_id)
+                    ],
+                )
+                project.operations.append(op)
+                new_op_ids.append(op.id)
+
+        self._do_action(description, mutate)
+        if len(new_op_ids) == 1:
+            self._select_operation_in_tree(new_op_ids[0])
+
     def _on_delete_operation(self) -> None:
         op = self._currently_selected_operation()
         if op is None:
@@ -661,7 +714,9 @@ class MainWindow(QMainWindow):
         tool.geometry["diameter"] = diameter
         return ToolController(tool_number=next_number, tool=tool)
 
-    def _tool_controller_for(self, op: ProfileOp) -> ToolController | None:
+    def _tool_controller_for(
+        self, op: ProfileOp | PocketOp
+    ) -> ToolController | None:
         if op.tool_controller_id is None:
             return None
         return next(
@@ -716,8 +771,8 @@ class MainWindow(QMainWindow):
                 op = self._find_operation(child_ref[1])
                 if op is not None:
                     child.setText(0, f"{op.name} [{op.type}]")
-        # Refresh the live profile preview against the new parameters.
-        self._update_profile_preview(self._currently_selected_operation())
+        # Refresh the live operation preview against the new parameters.
+        self._update_operation_preview(self._currently_selected_operation())
         # Edits invalidate any previously generated toolpath — clear both the
         # viewport overlay and the G-code text so neither is misleading.
         self._viewport.clear_toolpath_preview()
@@ -727,7 +782,9 @@ class MainWindow(QMainWindow):
         if self._edit_snapshot is not None:
             self._edit_timer.start()
 
-    def _currently_selected_operation(self) -> ProfileOp | None:
+    def _currently_selected_operation(
+        self,
+    ) -> ProfileOp | PocketOp | None:
         for item in self._tree.selectedItems():
             ref: _TreeRef = item.data(0, Qt.ItemDataRole.UserRole)
             if ref and ref[0] == "operation":
@@ -737,13 +794,16 @@ class MainWindow(QMainWindow):
     def _on_generate_gcode(self) -> None:
         if not self._project.operations:
             return
+        toolpaths = []
         try:
-            toolpaths = [
-                generate_profile_toolpath(op, self._project)
-                for op in self._project.operations
-                if op.enabled
-            ]
-        except ProfileGenerationError as exc:
+            for op in self._project.operations:
+                if not op.enabled:
+                    continue
+                if isinstance(op, ProfileOp):
+                    toolpaths.append(generate_profile_toolpath(op, self._project))
+                elif isinstance(op, PocketOp):
+                    toolpaths.append(generate_pocket_toolpath(op, self._project))
+        except (ProfileGenerationError, PocketGenerationError) as exc:
             QMessageBox.critical(self, "G-code generation failed", str(exc))
             return
         gcode = UccncPostProcessor().post_program(toolpaths)

@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt
 from pytestqt.qtbot import QtBot
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
-from pymillcam.core.operations import GeometryRef, ProfileOp
+from pymillcam.core.operations import GeometryRef, PocketOp, ProfileOp
 from pymillcam.core.project import Project
 from pymillcam.core.segments import ArcSegment, LineSegment
 from pymillcam.ui.main_window import MainWindow
@@ -260,12 +260,12 @@ def test_editing_op_in_properties_panel_updates_regenerated_gcode(
 
     # Select op so the properties panel binds to it.
     main_window._select_operation_in_tree(op.id)
-    main_window._properties._form.cut_depth.setValue(-9.0)
+    main_window._properties._profile_form.cut_depth.setValue(-9.0)
     assert op.cut_depth == -9.0
 
     main_window._action_generate_gcode.trigger()
     first = main_window._output.toPlainText()
-    main_window._properties._form.cut_depth.setValue(-1.0)
+    main_window._properties._profile_form.cut_depth.setValue(-1.0)
     main_window._action_generate_gcode.trigger()
     second = main_window._output.toPlainText()
     assert first != second  # cache-free regeneration
@@ -308,7 +308,7 @@ def test_editing_op_updates_profile_preview(main_window: MainWindow) -> None:
     op = main_window.project.operations[0]
     main_window._select_operation_in_tree(op.id)
     before = list(main_window._viewport._profile_preview)
-    main_window._properties._form.tool_diameter.setValue(10.0)
+    main_window._properties._profile_form.tool_diameter.setValue(10.0)
     after = list(main_window._viewport._profile_preview)
     assert before != after, "tool diameter change should re-compute preview"
 
@@ -332,7 +332,7 @@ def test_editing_op_clears_stale_toolpath_preview(main_window: MainWindow) -> No
     main_window._action_generate_gcode.trigger()
     assert main_window._viewport._toolpath_preview
     assert main_window._output.toPlainText() != ""
-    main_window._properties._form.cut_depth.setValue(-7.0)
+    main_window._properties._profile_form.cut_depth.setValue(-7.0)
     assert main_window._viewport._toolpath_preview == []
     assert main_window._output.toPlainText() == ""
 
@@ -391,9 +391,9 @@ def test_property_edits_coalesce_into_one_undo_step(main_window: MainWindow) -> 
     main_window._select_operation_in_tree(op.id)
 
     # Three rapid edits — should coalesce until the timer fires.
-    main_window._properties._form.cut_depth.setValue(-5.0)
-    main_window._properties._form.cut_depth.setValue(-7.0)
-    main_window._properties._form.cut_depth.setValue(-9.0)
+    main_window._properties._profile_form.cut_depth.setValue(-5.0)
+    main_window._properties._profile_form.cut_depth.setValue(-7.0)
+    main_window._properties._profile_form.cut_depth.setValue(-9.0)
     # Force the coalesce timer to fire now rather than waiting 400 ms.
     main_window._commit_pending_edit()
 
@@ -414,7 +414,7 @@ def test_undo_during_in_progress_edit_reverts_without_recording(
     op = main_window.project.operations[0]
     main_window._select_operation_in_tree(op.id)
     # Mutate but do NOT commit the coalesced edit.
-    main_window._properties._form.cut_depth.setValue(-5.0)
+    main_window._properties._profile_form.cut_depth.setValue(-5.0)
     assert main_window.project.operations[0].cut_depth == -5.0
 
     # Undo while the edit is mid-flight: revert to snapshot, no stack push.
@@ -538,3 +538,75 @@ def test_exit_action_closes_window(main_window: MainWindow, qtbot: QtBot) -> Non
     assert main_window.isVisible()
     main_window._action_exit.trigger()
     assert not main_window.isVisible()
+
+
+# ---------- Pocket operation smoke tests ---------------------------------
+
+
+def test_add_pocket_requires_selected_entity(main_window: MainWindow) -> None:
+    project, _ = _project_with_one_circle()
+    main_window.set_project(project)
+    assert not main_window._action_add_pocket.isEnabled()
+
+
+def test_add_pocket_creates_op_and_default_tool_controller(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    assert main_window._action_add_pocket.isEnabled()
+
+    main_window._action_add_pocket.trigger()
+
+    ops = main_window.project.operations
+    assert len(ops) == 1
+    op = ops[0]
+    assert isinstance(op, PocketOp)
+    assert op.geometry_refs == [GeometryRef(layer_name="Holes", entity_id=entity.id)]
+    assert op.tool_controller_id is not None
+    assert main_window._action_generate_gcode.isEnabled()
+
+
+def test_generate_gcode_for_pocket_fills_output_pane(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_pocket.trigger()
+
+    main_window._action_generate_gcode.trigger()
+    text = main_window._output.toPlainText()
+    assert "Pocket" in text  # operation comment
+    assert "M30" in text
+
+
+def test_pocket_preview_populates_when_pocket_op_is_selected(
+    main_window: MainWindow,
+) -> None:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_pocket.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    assert main_window._viewport._profile_preview, "expected pocket preview segments"
+
+
+def test_profile_and_pocket_ops_coexist_in_generation(
+    main_window: MainWindow,
+) -> None:
+    """Two ops of different types on the same project should both produce
+    G-code in one generate pass."""
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_pocket.trigger()
+    assert len(main_window.project.operations) == 2
+    main_window._action_generate_gcode.trigger()
+    text = main_window._output.toPlainText()
+    assert "Profile" in text
+    assert "Pocket" in text

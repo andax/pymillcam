@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
 from pymillcam.core.geometry import GeometryLayer
-from pymillcam.core.operations import ProfileOp
+from pymillcam.core.operations import PocketOp, ProfileOp
 from pymillcam.core.tools import ToolController
+
+# Pydantic v2 discriminated union — the `type` literal on each concrete
+# op tells the validator which class to reconstruct when loading JSON.
+OperationUnion = Annotated[
+    ProfileOp | PocketOp, Field(discriminator="type")
+]
 
 
 class ZReference(StrEnum):
@@ -59,4 +66,4 @@ class Project(BaseModel):
     settings: ProjectSettings = Field(default_factory=ProjectSettings)
     geometry_layers: list[GeometryLayer] = Field(default_factory=list)
     tool_controllers: list[ToolController] = Field(default_factory=list)
-    operations: list[ProfileOp] = Field(default_factory=list)
+    operations: list[OperationUnion] = Field(default_factory=list)

@@ -6,9 +6,9 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 
 > **Status:** active early development. Phase 1 (foundations) is complete and
 > a good chunk of Phase 2 has landed. The app is usable end-to-end for
-> **outside/inside profile cutouts** exported as **UCCNC G-code**. Anything
-> outside that path (pockets, drill, tabs, other controllers, wizards…) is
-> not built yet — see [Roadmap](#roadmap) below.
+> **outside/inside profile cutouts** and **concentric-offset pockets**,
+> exported as **UCCNC G-code**. Other ops (drill, tabs, other controllers,
+> wizards…) are not built yet — see [Roadmap](#roadmap) below.
 
 ## What works today
 
@@ -22,6 +22,9 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   conventional direction, multi-depth stepping. Analytical arc-preserving
   offsetter for circles and line+tangent-arc contours (rounded rectangles);
   falls back to Shapely's buffer otherwise.
+- **Pocket toolpath.** Offset (concentric inward rings) strategy at a
+  single Z depth. Arc-preserving for circle and rounded-rect boundaries.
+  Multi-depth, zigzag/spiral strategies, and ramp entry are follow-ups.
 - **Lead-in / lead-out.** Arc, tangent, or direct styles, traversed at the
   stock surface (Z=0) so the plunge witness mark lands in air.
 - **On-contour ramp entry.** Each pass descends along the contour at a
@@ -43,7 +46,7 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- Pocket (zigzag / spiral / offset strategies)
+- Pocket multi-depth, zigzag / spiral strategies, ramp entry
 - Drill (simple, peck, chip-break)
 - Tabs for profile operations
 - Tool library (create, edit, save, load — superset of FreeCAD .fctb)
@@ -107,6 +110,7 @@ See [`examples/README.md`](examples/README.md) for more samples and the
 | Fit to View | `F` |
 | Join paths | `Ctrl+J` |
 | Add Profile | `Ctrl+P` |
+| Add Pocket | `Ctrl+K` |
 | Delete operation | `Del` |
 | Generate G-code | `Ctrl+G` |
 

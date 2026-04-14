@@ -1,8 +1,9 @@
 """Properties panel for editing the currently selected operation.
 
-Currently only `ProfileOp` is supported — the only operation type the
-engine can handle. As more operation types land, swap the single
-form widget for a stack indexed by op type.
+Hosts a QStackedWidget with one form per op type (ProfileOp, PocketOp)
+plus an empty-state page. `set_operation` picks the right page by
+inspecting `operation.type` (via isinstance) and routes field-changed
+signals to the type-specific writeback handler.
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ from pymillcam.core.operations import (
     LeadStyle,
     MillingDirection,
     OffsetSide,
+    PocketOp,
+    PocketStrategy,
     ProfileOp,
     RampConfig,
     RampStrategy,
@@ -38,7 +41,7 @@ class PropertiesPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._operation: ProfileOp | None = None
+        self._operation: ProfileOp | PocketOp | None = None
         self._tool_controller: ToolController | None = None
         self._suspend_signals = False
 
@@ -47,32 +50,49 @@ class PropertiesPanel(QWidget):
         self._empty.setMargin(12)
         self._stack.addWidget(self._empty)
 
-        self._form = _ProfileForm()
-        self._stack.addWidget(self._form)
+        self._profile_form = _ProfileForm()
+        self._stack.addWidget(self._profile_form)
+
+        self._pocket_form = _PocketForm()
+        self._stack.addWidget(self._pocket_form)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._stack)
 
-        self._form.name.textEdited.connect(self._on_field_changed)
-        self._form.offset_side.currentTextChanged.connect(self._on_field_changed)
-        self._form.direction.currentTextChanged.connect(self._on_field_changed)
-        self._form.cut_depth.valueChanged.connect(self._on_field_changed)
-        self._form.multi_depth.toggled.connect(self._on_field_changed)
-        self._form.stepdown.valueChanged.connect(self._on_field_changed)
-        self._form.chord_tolerance.valueChanged.connect(self._on_field_changed)
-        self._form.chord_override.toggled.connect(self._on_field_changed)
-        self._form.tool_diameter.valueChanged.connect(self._on_field_changed)
-        self._form.lead_in_style.currentTextChanged.connect(self._on_field_changed)
-        self._form.lead_in_length.valueChanged.connect(self._on_field_changed)
-        self._form.lead_out_style.currentTextChanged.connect(self._on_field_changed)
-        self._form.lead_out_length.valueChanged.connect(self._on_field_changed)
-        self._form.ramp_strategy.currentTextChanged.connect(self._on_field_changed)
-        self._form.ramp_angle.valueChanged.connect(self._on_field_changed)
+        self._wire_profile_signals()
+        self._wire_pocket_signals()
+
+    def _wire_profile_signals(self) -> None:
+        f = self._profile_form
+        f.name.textEdited.connect(self._on_profile_changed)
+        f.offset_side.currentTextChanged.connect(self._on_profile_changed)
+        f.direction.currentTextChanged.connect(self._on_profile_changed)
+        f.cut_depth.valueChanged.connect(self._on_profile_changed)
+        f.multi_depth.toggled.connect(self._on_profile_changed)
+        f.stepdown.valueChanged.connect(self._on_profile_changed)
+        f.chord_tolerance.valueChanged.connect(self._on_profile_changed)
+        f.chord_override.toggled.connect(self._on_profile_changed)
+        f.tool_diameter.valueChanged.connect(self._on_profile_changed)
+        f.lead_in_style.currentTextChanged.connect(self._on_profile_changed)
+        f.lead_in_length.valueChanged.connect(self._on_profile_changed)
+        f.lead_out_style.currentTextChanged.connect(self._on_profile_changed)
+        f.lead_out_length.valueChanged.connect(self._on_profile_changed)
+        f.ramp_strategy.currentTextChanged.connect(self._on_profile_changed)
+        f.ramp_angle.valueChanged.connect(self._on_profile_changed)
+
+    def _wire_pocket_signals(self) -> None:
+        f = self._pocket_form
+        f.name.textEdited.connect(self._on_pocket_changed)
+        f.strategy.currentTextChanged.connect(self._on_pocket_changed)
+        f.direction.currentTextChanged.connect(self._on_pocket_changed)
+        f.tool_diameter.valueChanged.connect(self._on_pocket_changed)
+        f.cut_depth.valueChanged.connect(self._on_pocket_changed)
+        f.stepover.valueChanged.connect(self._on_pocket_changed)
 
     def set_operation(
         self,
-        operation: ProfileOp | None,
+        operation: ProfileOp | PocketOp | None,
         tool_controller: ToolController | None = None,
     ) -> None:
         self._operation = operation
@@ -82,41 +102,59 @@ class PropertiesPanel(QWidget):
             return
         self._suspend_signals = True
         try:
-            self._form.name.setText(operation.name)
-            self._form.offset_side.setCurrentText(operation.offset_side.value)
-            self._form.direction.setCurrentText(operation.direction.value)
-            self._form.cut_depth.setValue(operation.cut_depth)
-            self._form.multi_depth.setChecked(operation.multi_depth)
-            self._form.stepdown.setValue(
-                operation.stepdown if operation.stepdown is not None else 1.0
-            )
-            self._form.stepdown.setEnabled(operation.multi_depth)
-            override = operation.chord_tolerance is not None
-            self._form.chord_override.setChecked(override)
-            self._form.chord_tolerance.setEnabled(override)
-            if override:
-                self._form.chord_tolerance.setValue(operation.chord_tolerance or 0.05)
-            if tool_controller is not None:
-                diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
-                self._form.tool_diameter.setValue(diameter)
-                self._form.tool_diameter.setEnabled(True)
+            if isinstance(operation, ProfileOp):
+                self._populate_profile(operation, tool_controller)
+                self._stack.setCurrentWidget(self._profile_form)
+            elif isinstance(operation, PocketOp):
+                self._populate_pocket(operation, tool_controller)
+                self._stack.setCurrentWidget(self._pocket_form)
             else:
-                self._form.tool_diameter.setEnabled(False)
-            self._populate_lead(
-                operation.lead_in,
-                self._form.lead_in_style,
-                self._form.lead_in_length,
-            )
-            self._populate_lead(
-                operation.lead_out,
-                self._form.lead_out_style,
-                self._form.lead_out_length,
-            )
-            self._form.ramp_strategy.setCurrentText(operation.ramp.strategy.value)
-            self._form.ramp_angle.setValue(operation.ramp.angle_deg)
+                self._stack.setCurrentWidget(self._empty)
         finally:
             self._suspend_signals = False
-        self._stack.setCurrentWidget(self._form)
+
+    def _populate_profile(
+        self, op: ProfileOp, tool_controller: ToolController | None
+    ) -> None:
+        f = self._profile_form
+        f.name.setText(op.name)
+        f.offset_side.setCurrentText(op.offset_side.value)
+        f.direction.setCurrentText(op.direction.value)
+        f.cut_depth.setValue(op.cut_depth)
+        f.multi_depth.setChecked(op.multi_depth)
+        f.stepdown.setValue(op.stepdown if op.stepdown is not None else 1.0)
+        f.stepdown.setEnabled(op.multi_depth)
+        override = op.chord_tolerance is not None
+        f.chord_override.setChecked(override)
+        f.chord_tolerance.setEnabled(override)
+        if override:
+            f.chord_tolerance.setValue(op.chord_tolerance or 0.05)
+        if tool_controller is not None:
+            diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
+            f.tool_diameter.setValue(diameter)
+            f.tool_diameter.setEnabled(True)
+        else:
+            f.tool_diameter.setEnabled(False)
+        self._populate_lead(op.lead_in, f.lead_in_style, f.lead_in_length)
+        self._populate_lead(op.lead_out, f.lead_out_style, f.lead_out_length)
+        f.ramp_strategy.setCurrentText(op.ramp.strategy.value)
+        f.ramp_angle.setValue(op.ramp.angle_deg)
+
+    def _populate_pocket(
+        self, op: PocketOp, tool_controller: ToolController | None
+    ) -> None:
+        f = self._pocket_form
+        f.name.setText(op.name)
+        f.strategy.setCurrentText(op.strategy.value)
+        f.direction.setCurrentText(op.direction.value)
+        f.cut_depth.setValue(op.cut_depth)
+        f.stepover.setValue(op.stepover)
+        if tool_controller is not None:
+            diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
+            f.tool_diameter.setValue(diameter)
+            f.tool_diameter.setEnabled(True)
+        else:
+            f.tool_diameter.setEnabled(False)
 
     @staticmethod
     def _populate_lead(
@@ -127,45 +165,59 @@ class PropertiesPanel(QWidget):
         style.setCurrentText(config.style.value)
         length.setValue(config.length)
 
-    def _on_field_changed(self) -> None:
-        if self._suspend_signals or self._operation is None:
+    def _on_profile_changed(self) -> None:
+        if self._suspend_signals or not isinstance(self._operation, ProfileOp):
             return
         op = self._operation
-        op.name = self._form.name.text()
-        op.offset_side = OffsetSide(self._form.offset_side.currentText())
-        op.direction = MillingDirection(self._form.direction.currentText())
-        op.cut_depth = self._form.cut_depth.value()
-        op.multi_depth = self._form.multi_depth.isChecked()
-        self._form.stepdown.setEnabled(op.multi_depth)
-        op.stepdown = self._form.stepdown.value() if op.multi_depth else None
-        override = self._form.chord_override.isChecked()
-        self._form.chord_tolerance.setEnabled(override)
-        op.chord_tolerance = (
-            self._form.chord_tolerance.value() if override else None
-        )
+        f = self._profile_form
+        op.name = f.name.text()
+        op.offset_side = OffsetSide(f.offset_side.currentText())
+        op.direction = MillingDirection(f.direction.currentText())
+        op.cut_depth = f.cut_depth.value()
+        op.multi_depth = f.multi_depth.isChecked()
+        f.stepdown.setEnabled(op.multi_depth)
+        op.stepdown = f.stepdown.value() if op.multi_depth else None
+        override = f.chord_override.isChecked()
+        f.chord_tolerance.setEnabled(override)
+        op.chord_tolerance = f.chord_tolerance.value() if override else None
         if self._tool_controller is not None:
             self._tool_controller.tool.geometry["diameter"] = (
-                self._form.tool_diameter.value()
+                f.tool_diameter.value()
             )
         op.lead_in = LeadConfig(
-            style=LeadStyle(self._form.lead_in_style.currentText()),
-            length=self._form.lead_in_length.value(),
+            style=LeadStyle(f.lead_in_style.currentText()),
+            length=f.lead_in_length.value(),
         )
         op.lead_out = LeadConfig(
-            style=LeadStyle(self._form.lead_out_style.currentText()),
-            length=self._form.lead_out_length.value(),
+            style=LeadStyle(f.lead_out_style.currentText()),
+            length=f.lead_out_length.value(),
         )
         op.ramp = RampConfig(
-            strategy=RampStrategy(self._form.ramp_strategy.currentText()),
-            angle_deg=self._form.ramp_angle.value(),
-            # Preserve fields we're not editing in the UI yet.
+            strategy=RampStrategy(f.ramp_strategy.currentText()),
+            angle_deg=f.ramp_angle.value(),
             radius=op.ramp.radius,
         )
         self.operation_changed.emit()
 
+    def _on_pocket_changed(self) -> None:
+        if self._suspend_signals or not isinstance(self._operation, PocketOp):
+            return
+        op = self._operation
+        f = self._pocket_form
+        op.name = f.name.text()
+        op.strategy = PocketStrategy(f.strategy.currentText())
+        op.direction = MillingDirection(f.direction.currentText())
+        op.cut_depth = f.cut_depth.value()
+        op.stepover = f.stepover.value()
+        if self._tool_controller is not None:
+            self._tool_controller.tool.geometry["diameter"] = (
+                f.tool_diameter.value()
+            )
+        self.operation_changed.emit()
+
 
 class _ProfileForm(QWidget):
-    """The actual editable form. Held in its own widget so its fields are typed."""
+    """The profile form. Held in its own widget so its fields are typed."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -222,6 +274,41 @@ class _ProfileForm(QWidget):
         form.addRow("Lead-out length", self.lead_out_length)
         form.addRow("Ramp strategy", self.ramp_strategy)
         form.addRow("Ramp angle", self.ramp_angle)
+
+
+class _PocketForm(QWidget):
+    """The pocket form. Mirrors the profile form style."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = QLineEdit()
+        self.strategy = QComboBox()
+        self.strategy.addItems([s.value for s in PocketStrategy])
+        self.direction = QComboBox()
+        self.direction.addItems([d.value for d in MillingDirection])
+        self.tool_diameter = QDoubleSpinBox()
+        self.tool_diameter.setRange(0.05, 100.0)
+        self.tool_diameter.setDecimals(3)
+        self.tool_diameter.setSingleStep(0.5)
+        self.tool_diameter.setSuffix(" mm")
+        self.cut_depth = QDoubleSpinBox()
+        self.cut_depth.setRange(-1000.0, 1000.0)
+        self.cut_depth.setDecimals(3)
+        self.cut_depth.setSingleStep(0.5)
+        self.cut_depth.setSuffix(" mm")
+        self.stepover = QDoubleSpinBox()
+        self.stepover.setRange(0.001, 100.0)
+        self.stepover.setDecimals(3)
+        self.stepover.setSingleStep(0.25)
+        self.stepover.setSuffix(" mm")
+
+        form = QFormLayout(self)
+        form.addRow("Name", self.name)
+        form.addRow("Tool diameter", self.tool_diameter)
+        form.addRow("Strategy", self.strategy)
+        form.addRow("Direction", self.direction)
+        form.addRow("Cut depth", self.cut_depth)
+        form.addRow("Stepover", self.stepover)
 
 
 def _make_lead_widgets() -> tuple[QComboBox, QDoubleSpinBox]:

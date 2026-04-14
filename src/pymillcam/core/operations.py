@@ -46,6 +46,16 @@ class TabStyle(StrEnum):
     THIN_WEB = "thin_web"
 
 
+class PocketStrategy(StrEnum):
+    # OFFSET = concentric inward rings, starting at the outermost ring
+    # (one tool radius in from the boundary) and stepping inward by the
+    # configured stepover until the region closes up.
+    # ZIGZAG / SPIRAL are planned but not implemented yet.
+    OFFSET = "offset"
+    ZIGZAG = "zigzag"
+    SPIRAL = "spiral"
+
+
 class GeometryRef(BaseModel):
     """Reference to an entity within a specific GeometryLayer."""
     layer_name: str
@@ -106,3 +116,27 @@ class ProfileOp(Operation):
     lead_out: LeadConfig = Field(default_factory=LeadConfig)
     tabs: TabConfig = Field(default_factory=TabConfig)
     ramp: RampConfig = Field(default_factory=RampConfig)
+
+
+class PocketOp(Operation):
+    """Area-clearing pocket cut inside a closed contour.
+
+    Pockets always cut interior to the selected boundary — there's no
+    outside/inside choice. `strategy` picks how the area is cleared
+    (offset = concentric inward rings; zigzag / spiral reserved).
+    """
+    type: Literal["pocket"] = "pocket"
+    strategy: PocketStrategy = PocketStrategy.OFFSET
+    direction: MillingDirection = MillingDirection.CLIMB
+    # Radial step between successive concentric rings. Typical sensible
+    # range is 30-50% of tool diameter; 2 mm is a safe default for the
+    # 3 mm default tool.
+    stepover: float = 2.0
+    multi_depth: bool = False
+    stepdown: float | None = None
+    # Pockets plunge into solid material, so PLUNGE is risky without a
+    # pilot hole. Helical / linear ramp for pockets is a follow-up; for
+    # now the default is PLUNGE and users should pre-drill if needed.
+    ramp: RampConfig = Field(
+        default_factory=lambda: RampConfig(strategy=RampStrategy.PLUNGE)
+    )
