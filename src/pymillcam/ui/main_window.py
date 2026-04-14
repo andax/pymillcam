@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QStyle,
+    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
     QWidget,
@@ -94,6 +96,7 @@ class MainWindow(QMainWindow):
         self._build_properties_dock()
         self._build_output_dock()
         self._build_menus()
+        self._build_toolbar()
         self._build_status_bar()
 
     @property
@@ -190,6 +193,7 @@ class MainWindow(QMainWindow):
         self._action_open_dxf.setShortcut(QKeySequence.StandardKey.Open)
         self._action_open_dxf.triggered.connect(self._on_open_dxf)
         self._action_open_project = QAction("Open &Project...", self)
+        self._action_open_project.setShortcut("Ctrl+Shift+O")
         self._action_open_project.triggered.connect(self._on_open_project)
         self._action_save = QAction("&Save", self)
         self._action_save.setShortcut(QKeySequence.StandardKey.Save)
@@ -253,9 +257,11 @@ class MainWindow(QMainWindow):
 
         ops_menu = menu_bar.addMenu("&Operations")
         self._action_join_paths = QAction("&Join paths", self)
+        self._action_join_paths.setShortcut("Ctrl+J")
         self._action_join_paths.setEnabled(False)
         self._action_join_paths.triggered.connect(self._on_join_paths)
         self._action_add_profile = QAction("Add &Profile", self)
+        self._action_add_profile.setShortcut("Ctrl+P")
         self._action_add_profile.setEnabled(False)
         self._action_add_profile.triggered.connect(self._on_add_profile)
         self._action_delete_operation = QAction("&Delete operation", self)
@@ -263,6 +269,7 @@ class MainWindow(QMainWindow):
         self._action_delete_operation.setEnabled(False)
         self._action_delete_operation.triggered.connect(self._on_delete_operation)
         self._action_generate_gcode = QAction("&Generate G-code", self)
+        self._action_generate_gcode.setShortcut("Ctrl+G")
         self._action_generate_gcode.setEnabled(False)
         self._action_generate_gcode.triggered.connect(self._on_generate_gcode)
         ops_menu.addAction(self._action_join_paths)
@@ -271,6 +278,56 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_generate_gcode)
+
+    def _build_toolbar(self) -> None:
+        """Main toolbar — reuses the existing QActions from the menus so
+        enable/disable state stays in sync automatically."""
+        style = self.style()
+        # Map a few actions to Qt's built-in icon set. Actions without a
+        # mapping fall back to their text label — QToolButtonTextBesideIcon
+        # keeps the toolbar visually consistent either way.
+        self._action_open_dxf.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        self._action_open_project.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+        )
+        self._action_save.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
+        self._action_undo.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
+        )
+        self._action_redo.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
+        )
+        self._action_delete_operation.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self._action_generate_gcode.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+        )
+
+        toolbar = QToolBar("Main", self)
+        toolbar.setObjectName("main_toolbar")
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        toolbar.addAction(self._action_open_dxf)
+        toolbar.addAction(self._action_open_project)
+        toolbar.addAction(self._action_save)
+        toolbar.addSeparator()
+        toolbar.addAction(self._action_undo)
+        toolbar.addAction(self._action_redo)
+        toolbar.addSeparator()
+        toolbar.addAction(self._action_fit)
+        toolbar.addSeparator()
+        toolbar.addAction(self._action_join_paths)
+        toolbar.addAction(self._action_add_profile)
+        toolbar.addAction(self._action_delete_operation)
+        toolbar.addSeparator()
+        toolbar.addAction(self._action_generate_gcode)
 
     def _build_status_bar(self) -> None:
         self._coord_label = QLabel("X: —   Y: —")

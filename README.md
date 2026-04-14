@@ -35,7 +35,8 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   selection (L→R contained, R→L crossing) with `Ctrl`/`Shift` modifiers
   for multi-select, operations tree, Properties panel, G-code output pane,
   undo / redo with command coalescing on property edits, project save/load
-  as JSON (`.pmc`).
+  as JSON (`.pmc`), and a toolbar + keyboard shortcuts for the common
+  actions (see below).
 
 ## What's coming
 
@@ -82,15 +83,32 @@ one go.
 The quickest path from "just cloned" to "G-code in hand":
 
 1. `uv run pymillcam`
-2. `File > Open Project…` → select `examples/circle_cutout.pmc`.
-3. `Operations > Generate G-code`. The bottom pane fills with UCCNC
-   G-code. The viewport shows the toolpath overlay in magenta.
+2. `File > Open Project…` (`Ctrl+Shift+O`) → select
+   `examples/circle_cutout.pmc`.
+3. `Operations > Generate G-code` (`Ctrl+G`, or the play-arrow button in
+   the toolbar). The bottom pane fills with UCCNC G-code. The viewport
+   shows the toolpath overlay in magenta.
 4. Click the operation in the tree, then adjust values in the Properties
    panel (cut depth, stepdown, lead-in style, ramp angle). The preview
    updates live; regenerate to refresh the G-code.
 
 See [`examples/README.md`](examples/README.md) for more samples and the
 "start from a DXF" walkthrough.
+
+### Keyboard shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| Open DXF | `Ctrl+O` |
+| Open Project | `Ctrl+Shift+O` |
+| Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Preferences | `Ctrl+,` |
+| Fit to View | `F` |
+| Join paths | `Ctrl+J` |
+| Add Profile | `Ctrl+P` |
+| Delete operation | `Del` |
+| Generate G-code | `Ctrl+G` |
 
 ## Testing and feedback
 
