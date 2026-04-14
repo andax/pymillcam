@@ -123,7 +123,7 @@ class IRInstruction:
 
 #### 2.3.2 Toolpath Algorithms
 
-- **Profile:** Offset curves (inside/outside/on-line), lead-in/lead-out (arc, tangent, direct), ramp entry options (helical, linear, plunge), tab generation with multiple styles (rectangular, triangular/tapered, thin-web), auto-placement or manual positioning, multi-depth stepping.
+- **Profile:** Offset curves (inside/outside/on-line), lead-in/lead-out (arc, tangent, direct), ramp entry options (helical, linear, plunge), user-selectable contour start position (P₀) so lead-in/out and the ramp groove land in a deliberate location rather than wherever the offsetter picks, tab generation with multiple styles (rectangular, triangular/tapered, thin-web), auto-placement or manual positioning, multi-depth stepping.
 - **Pocket:** Zigzag, spiral, and offset-based strategies. Configurable stepover percentage, direction (climb/conventional with clear visual indicator), island detection, ramp entry (helical or linear — avoids plunging into material), multi-depth with optional finishing pass at reduced stepdown.
 - **Drill:** Simple drill, peck drill, chip-break cycle. Supports ordered point lists, optimized drill path (nearest-neighbor or TSP heuristic).
 - **Surface/Facing:** Full-stock-area pocket variant with optimized parameters for facing. Configurable overlap, direction, boundary offset for edge cleanup.
@@ -772,6 +772,11 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 - Drill operation (simple and peck cycles)
 - Tab generation for profile operations
 - Lead-in / lead-out for profiles
+- User-selectable contour start position P₀ (low priority — the lead/ramp
+  machinery is in place; P₀ currently falls out of the offsetter's
+  arbitrary polygon seed. Let the user click a point on the viewport to
+  rotate the closed chain so P₀ lands there, keeping witness marks in
+  scrap.)
 - Tool library (create, edit, save, load)
 - Machine definition system with defaults cascade
 - Select Similar (same diameter, same layer, same geometry type)
