@@ -32,3 +32,8 @@ Thumbs.db
 *.nc
 *.gcode
 *.tap
+
+# Scratch files at the repo root — examples/ stays tracked since those
+# patterns are anchored with a leading slash.
+/*.pmc
+/*.dxf

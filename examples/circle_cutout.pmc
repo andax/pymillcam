@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "name": "50mm circle cutout",
+  "machine_id": null,
+  "stock": {
+    "width": 80.0,
+    "height": 80.0,
+    "thickness": 3.0,
+    "material": ""
+  },
+  "settings": {
+    "units": "mm",
+    "z_zero_reference": "top_of_stock",
+    "work_origin": "front_left",
+    "safe_height": 15.0,
+    "clearance_plane": 3.0,
+    "chord_tolerance": 0.02
+  },
+  "geometry_layers": [
+    {
+      "name": "Sketch",
+      "color": "#ffffff",
+      "visible": true,
+      "entities": [
+        {
+          "id": "789f7dc5f32f48b5a29732337ec9c0a1",
+          "segments": [
+            {
+              "type": "arc",
+              "center": [
+                0.0,
+                0.0
+              ],
+              "radius": 25.0,
+              "start_angle_deg": 0.0,
+              "sweep_deg": 360.0
+            }
+          ],
+          "closed": true,
+          "point": null,
+          "source": "dxf",
+          "dxf_entity_type": "circle"
+        }
+      ],
+      "source_dxf_path": "examples/50mm_circle.dxf",
+      "import_timestamp": "2026-04-14T09:00:14.162563Z"
+    }
+  ],
+  "tool_controllers": [
+    {
+      "tool_number": 1,
+      "tool": {
+        "version": 1,
+        "name": "3mm flat",
+        "shape": "endmill",
+        "geometry": {
+          "diameter": 3.0,
+          "flute_length": 15,
+          "total_length": 50,
+          "shank_diameter": 3,
+          "flute_count": 2
+        },
+        "cutting_data": {},
+        "supplier": "",
+        "part_number": "",
+        "notes": ""
+      },
+      "spindle_rpm": 18000,
+      "feed_xy": 1200.0,
+      "feed_z": 300.0,
+      "stickout": 30.0
+    }
+  ],
+  "operations": [
+    {
+      "id": "fbbb562a2f664d65bb7a8c3dfd443adc",
+      "type": "profile",
+      "name": "Cut 50mm circle",
+      "enabled": true,
+      "tool_controller_id": 1,
+      "geometry_refs": [
+        {
+          "layer_name": "Sketch",
+          "entity_id": "789f7dc5f32f48b5a29732337ec9c0a1"
+        }
+      ],
+      "cut_depth": -3.0,
+      "safe_height": null,
+      "clearance_plane": null,
+      "chord_tolerance": null,
+      "offset_side": "outside",
+      "direction": "climb",
+      "multi_depth": true,
+      "stepdown": 1.0,
+      "lead_in": {
+        "style": "arc",
+        "length": 2.0
+      },
+      "lead_out": {
+        "style": "arc",
+        "length": 2.0
+      },
+      "tabs": {
+        "enabled": false,
+        "style": "rectangular",
+        "count": 4,
+        "width": 5.0,
+        "height": 1.5,
+        "auto_place": true
+      },
+      "ramp": {
+        "strategy": "linear",
+        "angle_deg": 3.0,
+        "radius": 1.0
+      }
+    }
+  ]
+}
