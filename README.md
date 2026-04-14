@@ -23,11 +23,14 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   offsetter for circles and line+tangent-arc contours (rounded rectangles);
   falls back to Shapely's buffer otherwise.
 - **Pocket toolpath.** Offset (concentric inward rings) strategy with
-  multi-depth stepping, between-pass retract to clearance, and helical
-  or linear on-contour ramp entry (with automatic fallback to linear
-  or plunge when the requested ramp doesn't fit). Arc-preserving for
-  circle and rounded-rect boundaries. Zigzag / spiral strategies are
-  follow-ups.
+  multi-depth stepping and retract-to-clearance between passes.
+  Arc-preserving for circle and rounded-rect boundaries. Two ramp
+  entries: **linear** (default, occupies the last slice of the first
+  ring so the ramp ends at ring-start and the full ring cuts flat at
+  pass depth) and **helical** (spiral tangent to ring-start on a small
+  circle inside the pocket). Automatic fallback when the requested
+  ramp doesn't fit: helical → linear → plunge. Zigzag / spiral
+  strategies and island detection are follow-ups.
 - **Lead-in / lead-out.** Arc, tangent, or direct styles, traversed at the
   stock surface (Z=0) so the plunge witness mark lands in air.
 - **On-contour ramp entry.** Each pass descends along the contour at a

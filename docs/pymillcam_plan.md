@@ -768,10 +768,14 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 
 **Goal:** A working tool for the most common sheet operations with smart selection and time awareness.
 
-- Pocket toolpath (zigzag strategy)
+- ✅ Lead-in / lead-out for profiles (arc, tangent, direct)
+- ✅ On-contour ramp entry for profiles (descent + cleanup + ascent)
+- ✅ Pocket OFFSET strategy (concentric inward rings, arc-preserving),
+  multi-depth, ramp entry (LINEAR default + HELICAL with fallback chain)
+- Pocket ZIGZAG / SPIRAL strategies
+- Pocket island / hole detection
 - Drill operation (simple and peck cycles)
 - Tab generation for profile operations
-- Lead-in / lead-out for profiles
 - User-selectable contour start position P₀ (low priority — the lead/ramp
   machinery is in place; P₀ currently falls out of the offsetter's
   arbitrary polygon seed. Let the user click a point on the viewport to

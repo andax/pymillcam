@@ -66,7 +66,7 @@ Transforms IR → G-code for specific controllers.
 - Pydantic for data models
 - numpy for numeric computation
 
-## Development Phase (Phase 1 complete; Phase 2 next)
+## Development Phase (Phase 1 complete; Phase 2 in progress)
 Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-code.
 1. ✅ Core Pydantic data models
 2. ✅ DXF import (arcs preserved as ArcSegments, including LWPOLYLINE bulges)
@@ -76,6 +76,16 @@ Phase 1 goal: Import a DXF, assign a profile operation to a contour, generate G-
 6. ✅ Undo/redo command infrastructure (snapshot-based stack, Ctrl+Z / Ctrl+Shift+Z, coalesced property edits)
 7. ✅ Directional box selection (L→R window, R→L crossing, multi-select)
 8. ✅ Project save/load as JSON
+
+Phase 2 progress (ongoing):
+- ✅ Profile leads (arc / tangent / direct) + on-contour ramp descent / ascent
+- ✅ Pocket toolpath — OFFSET strategy (concentric inward rings, arc-preserving),
+  multi-depth with retract-to-clearance between passes, ramp entry with LINEAR
+  (default) + HELICAL strategies and HELICAL→LINEAR→PLUNGE fallback chain.
+  LINEAR ramp occupies the last `ramp_length` arc of the first ring and ends at
+  `first_ring[0].start`, so the full ring runs at pass depth with no witness.
+- Pocket zigzag / spiral / islands — not yet.
+- Drill, tabs, tool library, machine definitions — not yet.
 
 `ProjectSettings.chord_tolerance` defaults to 0.02 mm (was 0.05 in early
 Phase 1). Per-op override via the Properties panel.
@@ -102,9 +112,10 @@ Phase 1). Per-op override via the Properties panel.
   are selected). Editing diameter in Properties only affects that op's
   controller. Phase 2 should add a Tool Library dock and let ops point
   at library entries instead.
-- Properties panel only knows `ProfileOp`. As Pocket / Drill / Engrave
-  land, swap the single form widget for a stack indexed by op type
-  (already noted in `properties_panel.py`).
+- Properties panel is now a QStackedWidget with one form per op type
+  (ProfileForm, PocketForm). Additional op types plug in as new
+  sub-forms; `set_operation` dispatches by `isinstance` and
+  `_on_{profile,pocket}_changed` guards cross-talk.
 - Property-edit coalescing window is a hardcoded 400 ms in
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.
