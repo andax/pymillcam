@@ -11,6 +11,8 @@ from pymillcam.core.operations import (
     MillingDirection,
     PocketOp,
     PocketStrategy,
+    RampConfig,
+    RampStrategy,
 )
 from pymillcam.core.project import Project
 from pymillcam.core.segments import ArcSegment, LineSegment
@@ -81,6 +83,9 @@ def _project_with_rect_pocket(
         stepover=stepover,
         direction=direction,
         strategy=PocketStrategy.OFFSET,
+        # Ramp/lead-agnostic tests pin PLUNGE so the instruction stream
+        # isn't perturbed by helical or on-contour ramp moves.
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
     )
     project = Project(
         geometry_layers=[layer], tool_controllers=[tc], operations=[op]
@@ -170,10 +175,10 @@ def test_generates_tool_change_spindle_and_final_retract() -> None:
     assert tp.instructions[-1].z == project.settings.safe_height
 
 
-def test_single_depth_plunges_once() -> None:
-    """One Z plunge at the first ring start, one retract at the end —
-    nothing between rings."""
+def test_single_depth_plunges_once_when_multi_depth_disabled() -> None:
+    """With multi_depth=False there's exactly one Z plunge at cut_depth."""
     project, op, _ = _project_with_rect_pocket(cut_depth=-3.0)
+    op.multi_depth = False
     tp = generate_pocket_toolpath(op, project)
     z_feeds = [
         i for i in tp.instructions
@@ -181,6 +186,67 @@ def test_single_depth_plunges_once() -> None:
     ]
     assert len(z_feeds) == 1
     assert z_feeds[0].z == pytest.approx(-3.0)
+
+
+def test_multi_depth_emits_one_plunge_per_pass() -> None:
+    """Multi-depth at -3 mm with 1 mm stepdown → 3 plunges at -1, -2, -3."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-3.0)
+    op.multi_depth = True
+    op.stepdown = 1.0
+    tp = generate_pocket_toolpath(op, project)
+    z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    assert [f.z for f in z_feeds] == [
+        pytest.approx(-1.0),
+        pytest.approx(-2.0),
+        pytest.approx(-3.0),
+    ]
+
+
+def test_multi_depth_retracts_to_clearance_between_passes() -> None:
+    """Between passes the tool retracts to the clearance plane, not safe
+    height — just enough to rapid back to the first ring start without
+    dragging through the cut."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-3.0)
+    op.multi_depth = True
+    op.stepdown = 1.0
+    clearance = project.settings.clearance_plane
+    tp = generate_pocket_toolpath(op, project)
+    # Collect Z rapids that happen between pass plunges.
+    plunge_indices = [
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z is not None
+    ]
+    # Between each pair of consecutive plunges, there should be at least
+    # one rapid z=clearance move.
+    for before, after in zip(plunge_indices[:-1], plunge_indices[1:], strict=True):
+        between = tp.instructions[before + 1 : after]
+        assert any(
+            ins.type is MoveType.RAPID and ins.z == pytest.approx(clearance)
+            for ins in between
+        )
+
+
+def test_multi_depth_rings_are_identical_per_pass() -> None:
+    """Ring XY paths are the same at every depth — only Z varies."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-3.0)
+    op.multi_depth = True
+    op.stepdown = 1.0
+    tp = generate_pocket_toolpath(op, project)
+    # Group XY feeds (z=None) between each plunge.
+    passes: list[list[tuple[float | None, float | None]]] = [[]]
+    for ins in tp.instructions:
+        if ins.type is MoveType.FEED and ins.z is not None:
+            if passes[-1]:
+                passes.append([])
+        elif ins.type is MoveType.FEED and ins.x is not None and ins.z is None:
+            passes[-1].append((ins.x, ins.y))
+    passes = [p for p in passes if p]
+    assert len(passes) >= 2
+    for p in passes[1:]:
+        assert p == passes[0]
 
 
 def test_rings_emit_line_feeds_for_rectangle() -> None:
@@ -282,3 +348,288 @@ def test_preview_concatenates_rings() -> None:
     )
     total_segs = sum(len(r) for r in rings)
     assert len(preview) == total_segs
+
+
+# ---------- ramp entry ---------------------------------------------------
+
+
+def test_helical_ramp_emits_arc_instructions_before_first_feed() -> None:
+    """With HELICAL ramp on a circle pocket (no corners to worry about),
+    each pass begins with arcs (the helix descent) before any feeds at
+    the pass depth."""
+    entity = _circle_entity(radius=20.0)
+    layer = GeometryLayer(name="Pocket", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Circle",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=entity.id)
+        ],
+        cut_depth=-2.0,
+        stepover=2.0,
+        multi_depth=False,
+        ramp=RampConfig(
+            strategy=RampStrategy.HELICAL, angle_deg=3.0, radius=1.0
+        ),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Find the feed to z=0 (descent to prev_z); after it must come the
+    # helix arcs with Z interpolating toward cut_depth.
+    idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z == pytest.approx(0.0)
+    )
+    after = tp.instructions[idx + 1:]
+    helix_arcs = [
+        i for i in after
+        if i.type in (MoveType.ARC_CW, MoveType.ARC_CCW)
+        and i.z is not None
+    ]
+    assert helix_arcs, "expected at least one helical arc with Z set"
+    # Z monotonically descends across the helix.
+    zs = [a.z for a in helix_arcs]
+    for earlier, later in zip(zs[:-1], zs[1:], strict=True):
+        assert later <= earlier + 1e-9
+    assert zs[-1] == pytest.approx(-2.0)
+
+
+def test_linear_ramp_interpolates_z_along_first_ring() -> None:
+    """LINEAR ramp emits feed moves whose Z descends monotonically from
+    prev_z (0 on the first pass) to the pass depth."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-2.0, stepover=2.0)
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+    )
+    op.multi_depth = False
+    tp = generate_pocket_toolpath(op, project)
+    # Start from the feed-to-prev_z=0, collect following feeds with z set.
+    ramp_feeds = []
+    seen_prev_z = False
+    for ins in tp.instructions:
+        if ins.type is MoveType.FEED and ins.z == pytest.approx(0.0):
+            seen_prev_z = True
+            continue
+        if not seen_prev_z:
+            continue
+        if ins.type is MoveType.FEED and ins.z is not None and ins.x is not None:
+            ramp_feeds.append(ins.z)
+        else:
+            break
+    assert ramp_feeds, "expected ramp feeds after prev_z descent"
+    # Monotonically decreasing toward pass_z.
+    for earlier, later in zip(ramp_feeds[:-1], ramp_feeds[1:], strict=True):
+        assert later <= earlier + 1e-9
+    assert ramp_feeds[-1] == pytest.approx(-2.0)
+
+
+def test_helical_fit_check_accepts_tangent_helix_on_circle_pocket() -> None:
+    """Regression: a helix of radius r tangent to the ring at its start
+    has its disk's farthest point exactly on the ring boundary. The fit
+    check must accept this — not reject it due to polygon chord-sag
+    discretization noise."""
+    from pymillcam.engine.pocket import _concentric_rings, _helix_fits
+    entity = _circle_entity(radius=25.0)
+    rings = _concentric_rings(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 0.02
+    )
+    # helix_radius=1.0 on a ring whose enclosed circle has radius 23.5
+    # (25 mm pocket − 1.5 mm tool). The helix disk touches the wall at
+    # one point; fit must still pass.
+    assert _helix_fits(rings[0], 1.0) is True
+
+
+def test_helical_ramp_emits_transit_to_ring_one() -> None:
+    """Regression: after the helix descent and first-ring cut, the
+    engine must emit an explicit transit feed from the end of the first
+    ring to the start of the second ring — otherwise the next arc's
+    I/J offsets are interpreted relative to the wrong current position
+    and the controller sees a malformed arc with mismatched radii."""
+    entity = _circle_entity(radius=25.0)
+    layer = GeometryLayer(name="Pocket", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Circle",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=entity.id)
+        ],
+        cut_depth=-1.0,
+        stepover=2.0,
+        multi_depth=False,
+        ramp=RampConfig(
+            strategy=RampStrategy.HELICAL, angle_deg=3.0, radius=1.0
+        ),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Outer ring (radius 23.5) is emitted as a full-circle ARC_CW. Right
+    # after that arc we must see a straight FEED to (21.5, 0) (ring 1's
+    # start), THEN the ring-1 arc.
+    outer_ring_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.ARC_CW
+        and ins.x == pytest.approx(23.5, abs=1e-6)
+        and ins.i == pytest.approx(-23.5, abs=1e-6)
+        and ins.z is None
+    )
+    transit = tp.instructions[outer_ring_idx + 1]
+    assert transit.type is MoveType.FEED
+    assert transit.z is None
+    assert transit.x == pytest.approx(21.5, abs=1e-6)
+
+
+def test_helical_ramp_integer_turns_keeps_center_stable() -> None:
+    """Regression: the helix must sweep an integer number of turns so
+    it starts and ends at the same XY point. If the sweep doesn't
+    close the loop, every emitted arc's I/J is relative to a
+    slightly-different start point than the G-code interpreter sees."""
+    entity = _circle_entity(radius=25.0)
+    layer = GeometryLayer(name="Pocket", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Circle",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=entity.id)
+        ],
+        cut_depth=-1.0,
+        stepover=2.0,
+        multi_depth=False,
+        ramp=RampConfig(
+            strategy=RampStrategy.HELICAL, angle_deg=3.0, radius=1.0
+        ),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    tp = generate_pocket_toolpath(op, project)
+    helix_arcs = [
+        i for i in tp.instructions
+        if i.type in (MoveType.ARC_CW, MoveType.ARC_CCW) and i.z is not None
+    ]
+    assert helix_arcs
+    # The helix forms full circles, so the LAST helix arc must end at
+    # the ring start (23.5, 0) — same as where the helix began.
+    assert helix_arcs[-1].x == pytest.approx(23.5, abs=1e-6)
+    assert helix_arcs[-1].y == pytest.approx(0.0, abs=1e-6)
+
+
+def test_helical_falls_back_to_linear_when_helix_too_big() -> None:
+    """If the configured helix_radius doesn't fit inside the first ring,
+    the engine falls back to LINEAR on-contour ramp (the instruction
+    stream contains straight feeds with Z interpolating, no arcs)."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-1.0, stepover=2.0)
+    # Helix radius 50 mm can't fit inside a 47×27 ring → fallback.
+    op.ramp = RampConfig(
+        strategy=RampStrategy.HELICAL, angle_deg=3.0, radius=50.0
+    )
+    op.multi_depth = False
+    tp = generate_pocket_toolpath(op, project)
+    # No arc instructions in the output (the rings are line-only and we
+    # fell back to LINEAR, which doesn't emit arcs here either).
+    assert not any(
+        i.type in (MoveType.ARC_CW, MoveType.ARC_CCW)
+        for i in tp.instructions
+    )
+
+
+def test_linear_falls_back_to_plunge_when_ramp_too_long() -> None:
+    """A large stepdown at a shallow angle produces a ramp_length
+    exceeding the first ring's perimeter → PLUNGE fallback."""
+    project, op, _ = _project_with_rect_pocket(
+        w=10.0, h=10.0, cut_depth=-5.0, stepover=1.0
+    )
+    op.multi_depth = False
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=0.1, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Should be one single-plunge feed to cut_depth, no intermediate
+    # descent feeds (ramp machinery was bypassed).
+    z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    assert len(z_feeds) == 1
+    assert z_feeds[0].z == pytest.approx(-5.0)
+
+
+def test_linear_ramp_ends_at_first_ring_start() -> None:
+    """The LINEAR ramp now occupies the last `ramp_length` arc of the
+    closed first ring — the ramp STARTS `ramp_length` arc-distance
+    before first_ring[0].start and ENDS at first_ring[0].start at
+    pass_z. No cleanup re-cut is needed because the full first ring
+    runs at pass_z right after the ramp, overwriting any witness."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-1.0, stepover=2.0)
+    op.multi_depth = False
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Find the last ramp feed (z set to the pass depth). Its XY target
+    # must equal first_ring[0].start = (1.5, 1.5) for the CLIMB rect.
+    ramp_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED
+        and i.z is not None
+        and i.x is not None
+        and i.z != 0.0  # exclude the initial feed-to-prev_z
+    ]
+    assert ramp_feeds
+    last_ramp = ramp_feeds[-1]
+    assert last_ramp.z == pytest.approx(-1.0)
+    assert last_ramp.x == pytest.approx(1.5, abs=1e-6)
+    assert last_ramp.y == pytest.approx(1.5, abs=1e-6)
+    # After the ramp ends at (1.5, 1.5) at pass_z, the full first ring
+    # runs once. The ring closes back at (1.5, 1.5). The next feed
+    # after that close is the transit to ring 2.
+    at_depth = [
+        (i.x, i.y)
+        for i in tp.instructions
+        if i.type is MoveType.FEED
+        and i.z is None
+        and i.x is not None
+    ]
+    close_idx = next(
+        i for i, pt in enumerate(at_depth)
+        if pt == pytest.approx((1.5, 1.5), abs=1e-6)
+    )
+    assert close_idx + 1 < len(at_depth)
+    assert at_depth[close_idx + 1] == pytest.approx((3.5, 3.5), abs=1e-6)
+
+
+def test_linear_ramp_start_is_before_ring_start_along_contour() -> None:
+    """The ramp starts at an XY rapid BEFORE the plunge, and that XY
+    should not equal first_ring[0].start (the ramp occupies the
+    tail of the ring, not the head)."""
+    project, op, _ = _project_with_rect_pocket(cut_depth=-1.0, stepover=2.0)
+    op.multi_depth = False
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Find the rapid XY immediately preceding the first FEED z=prev_z.
+    prev_z_feed_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z == pytest.approx(0.0)
+    )
+    # Walk backwards to find the most recent RAPID with XY set.
+    ramp_start_xy = None
+    for ins in reversed(tp.instructions[:prev_z_feed_idx]):
+        if ins.type is MoveType.RAPID and ins.x is not None:
+            ramp_start_xy = (ins.x, ins.y)
+            break
+    assert ramp_start_xy is not None
+    # Rect first_ring CLIMB starts at (1.5, 1.5); the last segment of
+    # the ring is the bottom edge, so the ramp start is somewhere along
+    # that edge — NOT at (1.5, 1.5) itself.
+    assert ramp_start_xy != pytest.approx((1.5, 1.5), abs=1e-6)

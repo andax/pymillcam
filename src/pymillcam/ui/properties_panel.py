@@ -89,6 +89,11 @@ class PropertiesPanel(QWidget):
         f.tool_diameter.valueChanged.connect(self._on_pocket_changed)
         f.cut_depth.valueChanged.connect(self._on_pocket_changed)
         f.stepover.valueChanged.connect(self._on_pocket_changed)
+        f.multi_depth.toggled.connect(self._on_pocket_changed)
+        f.stepdown.valueChanged.connect(self._on_pocket_changed)
+        f.ramp_strategy.currentTextChanged.connect(self._on_pocket_changed)
+        f.ramp_angle.valueChanged.connect(self._on_pocket_changed)
+        f.ramp_radius.valueChanged.connect(self._on_pocket_changed)
 
     def set_operation(
         self,
@@ -149,6 +154,12 @@ class PropertiesPanel(QWidget):
         f.direction.setCurrentText(op.direction.value)
         f.cut_depth.setValue(op.cut_depth)
         f.stepover.setValue(op.stepover)
+        f.multi_depth.setChecked(op.multi_depth)
+        f.stepdown.setValue(op.stepdown if op.stepdown is not None else 1.0)
+        f.stepdown.setEnabled(op.multi_depth)
+        f.ramp_strategy.setCurrentText(op.ramp.strategy.value)
+        f.ramp_angle.setValue(op.ramp.angle_deg)
+        f.ramp_radius.setValue(op.ramp.radius)
         if tool_controller is not None:
             diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
             f.tool_diameter.setValue(diameter)
@@ -209,6 +220,14 @@ class PropertiesPanel(QWidget):
         op.direction = MillingDirection(f.direction.currentText())
         op.cut_depth = f.cut_depth.value()
         op.stepover = f.stepover.value()
+        op.multi_depth = f.multi_depth.isChecked()
+        f.stepdown.setEnabled(op.multi_depth)
+        op.stepdown = f.stepdown.value() if op.multi_depth else None
+        op.ramp = RampConfig(
+            strategy=RampStrategy(f.ramp_strategy.currentText()),
+            angle_deg=f.ramp_angle.value(),
+            radius=f.ramp_radius.value(),
+        )
         if self._tool_controller is not None:
             self._tool_controller.tool.geometry["diameter"] = (
                 f.tool_diameter.value()
@@ -301,6 +320,24 @@ class _PocketForm(QWidget):
         self.stepover.setDecimals(3)
         self.stepover.setSingleStep(0.25)
         self.stepover.setSuffix(" mm")
+        self.multi_depth = QCheckBox("Multi-pass")
+        self.stepdown = QDoubleSpinBox()
+        self.stepdown.setRange(0.001, 100.0)
+        self.stepdown.setDecimals(3)
+        self.stepdown.setSingleStep(0.5)
+        self.stepdown.setSuffix(" mm")
+        self.ramp_strategy = QComboBox()
+        self.ramp_strategy.addItems([s.value for s in RampStrategy])
+        self.ramp_angle = QDoubleSpinBox()
+        self.ramp_angle.setRange(0.01, 45.0)
+        self.ramp_angle.setDecimals(2)
+        self.ramp_angle.setSingleStep(0.5)
+        self.ramp_angle.setSuffix(" °")
+        self.ramp_radius = QDoubleSpinBox()
+        self.ramp_radius.setRange(0.05, 100.0)
+        self.ramp_radius.setDecimals(3)
+        self.ramp_radius.setSingleStep(0.25)
+        self.ramp_radius.setSuffix(" mm")
 
         form = QFormLayout(self)
         form.addRow("Name", self.name)
@@ -309,6 +346,11 @@ class _PocketForm(QWidget):
         form.addRow("Direction", self.direction)
         form.addRow("Cut depth", self.cut_depth)
         form.addRow("Stepover", self.stepover)
+        form.addRow("", self.multi_depth)
+        form.addRow("Stepdown", self.stepdown)
+        form.addRow("Ramp strategy", self.ramp_strategy)
+        form.addRow("Ramp angle", self.ramp_angle)
+        form.addRow("Ramp radius", self.ramp_radius)
 
 
 def _make_lead_widgets() -> tuple[QComboBox, QDoubleSpinBox]:

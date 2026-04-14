@@ -241,6 +241,48 @@ def test_switching_between_profile_and_pocket_swaps_form(
     assert panel._stack.currentWidget() is panel._profile_form
 
 
+def test_pocket_ramp_fields_populate_from_op(panel: PropertiesPanel) -> None:
+    op = PocketOp(
+        name="P",
+        ramp=RampConfig(
+            strategy=RampStrategy.HELICAL, angle_deg=2.0, radius=1.25
+        ),
+    )
+    panel.set_operation(op)
+    assert panel._pocket_form.ramp_strategy.currentText() == "helical"
+    assert panel._pocket_form.ramp_angle.value() == pytest.approx(2.0)
+    assert panel._pocket_form.ramp_radius.value() == pytest.approx(1.25)
+
+
+def test_editing_pocket_ramp_strategy_writes_back(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = PocketOp(name="P", ramp=RampConfig(strategy=RampStrategy.HELICAL))
+    panel.set_operation(op)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._pocket_form.ramp_strategy.setCurrentText("plunge")
+    assert op.ramp.strategy is RampStrategy.PLUNGE
+
+
+def test_pocket_multi_depth_fields_populate(panel: PropertiesPanel) -> None:
+    op = PocketOp(name="P", multi_depth=True, stepdown=0.75)
+    panel.set_operation(op)
+    assert panel._pocket_form.multi_depth.isChecked()
+    assert panel._pocket_form.stepdown.isEnabled()
+    assert panel._pocket_form.stepdown.value() == pytest.approx(0.75)
+
+
+def test_pocket_disabling_multi_depth_clears_stepdown(
+    panel: PropertiesPanel,
+) -> None:
+    op = PocketOp(name="P", multi_depth=True, stepdown=1.5)
+    panel.set_operation(op)
+    panel._pocket_form.multi_depth.setChecked(False)
+    assert op.multi_depth is False
+    assert op.stepdown is None
+    assert not panel._pocket_form.stepdown.isEnabled()
+
+
 def test_pocket_profile_signals_are_routed_by_type(
     panel: PropertiesPanel, qtbot: QtBot
 ) -> None:

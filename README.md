@@ -22,9 +22,12 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   conventional direction, multi-depth stepping. Analytical arc-preserving
   offsetter for circles and line+tangent-arc contours (rounded rectangles);
   falls back to Shapely's buffer otherwise.
-- **Pocket toolpath.** Offset (concentric inward rings) strategy at a
-  single Z depth. Arc-preserving for circle and rounded-rect boundaries.
-  Multi-depth, zigzag/spiral strategies, and ramp entry are follow-ups.
+- **Pocket toolpath.** Offset (concentric inward rings) strategy with
+  multi-depth stepping, between-pass retract to clearance, and helical
+  or linear on-contour ramp entry (with automatic fallback to linear
+  or plunge when the requested ramp doesn't fit). Arc-preserving for
+  circle and rounded-rect boundaries. Zigzag / spiral strategies are
+  follow-ups.
 - **Lead-in / lead-out.** Arc, tangent, or direct styles, traversed at the
   stock surface (Z=0) so the plunge witness mark lands in air.
 - **On-contour ramp entry.** Each pass descends along the contour at a
@@ -46,7 +49,7 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- Pocket multi-depth, zigzag / spiral strategies, ramp entry
+- Pocket zigzag / spiral strategies
 - Drill (simple, peck, chip-break)
 - Tabs for profile operations
 - Tool library (create, edit, save, load — superset of FreeCAD .fctb)

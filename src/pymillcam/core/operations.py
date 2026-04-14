@@ -132,11 +132,16 @@ class PocketOp(Operation):
     # range is 30-50% of tool diameter; 2 mm is a safe default for the
     # 3 mm default tool.
     stepover: float = 2.0
-    multi_depth: bool = False
+    # Pockets default to multi-pass since full-depth plunging with a flat
+    # endmill is unusual even for shallow cuts. Stepdown follows the same
+    # ToolController cascade as profiles.
+    multi_depth: bool = True
     stepdown: float | None = None
-    # Pockets plunge into solid material, so PLUNGE is risky without a
-    # pilot hole. Helical / linear ramp for pockets is a follow-up; for
-    # now the default is PLUNGE and users should pre-drill if needed.
-    ramp: RampConfig = Field(
-        default_factory=lambda: RampConfig(strategy=RampStrategy.PLUNGE)
-    )
+    # LINEAR is the default: the ramp occupies the last `ramp_length`
+    # arc of the closed first ring, ending at `first_ring[0].start`.
+    # Each pass then cuts the full ring at pass depth — no witness on
+    # the pocket wall. If the ramp length exceeds the ring, the engine
+    # falls back to PLUNGE. HELICAL is available as an opt-in; it's
+    # classically safer in small pockets where the helix fits in a
+    # cleared area, but LINEAR produces a cleaner wall on large pockets.
+    ramp: RampConfig = Field(default_factory=RampConfig)
