@@ -46,10 +46,10 @@ The system is organized into three computational layers plus a UI layer and pers
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  UI Layer (PySide6)                                         │
-│  ┌─────────────┐ ┌────────────┐ ┌──────────┐ ┌────────────┐│
-│  │  Viewport   │ │ Operations │ │Properties│ │  Wizards   ││
-│  │  (2D/2.5D)  │ │ Tree       │ │ Panel    │ │  (Dialogs) ││
-│  └─────────────┘ └────────────┘ └──────────┘ └────────────┘│
+│  ┌─────────────┐ ┌────────────┐ ┌──────────┐ ┌────────────┐ │
+│  │  Viewport   │ │ Operations │ │Properties│ │  Wizards   │ │
+│  │  (2D/2.5D)  │ │ Tree       │ │ Panel    │ │  (Dialogs) │ │
+│  └─────────────┘ └────────────┘ └──────────┘ └────────────┘ │
 └─────────────────────────────────────────────────────────────┘
         │                    │                  │
 ┌─────────────────────────────────────────────────────────────┐
@@ -327,7 +327,7 @@ The UI is built with PySide6 (Qt6 for Python) and uses a dockable-panel layout. 
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ Toolbar: [New][Open][Save] | [Import DXF] | [Wizards ▼] |     │
+│ Toolbar: [New][Open][Save] | [Import DXF]  | [Wizards ▼] |     │
 │ [Profile][Pocket][Drill][Engrave][Surface] | [Generate]        │
 ├───────────────┬────────────────────────────────┬───────────────┤
 │ Operations    │                                │ Properties    │
@@ -336,13 +336,13 @@ The UI is built with PySide6 (Qt6 for Python) and uses a dockable-panel layout. 
 │ ▼ Project     │        Viewport                │ [Operation]   │
 │   Stock       │                                │  Tool: 3mm    │
 │   ▼ Ops       │        (geometry +             │  Depth: -6mm  │
-│     Profile   │         toolpath overlay)       │  Stepdown: 1  │
+│     Profile   │        toolpath overlay)       │  Stepdown: 1  │
 │     Pocket    │                                │  Feed: 1200   │
 │     Drill     │                                │  RPM: 18000   │
 │               │                                │               │
 │               │  [Origin marker]  [Z side view]│ [Z Stack]     │
 ├───────────────┴────────────────────────────────┴───────────────┤
-│ Status: Ready | Machine: CNC 6040 | Units: mm                 │
+│ Status: Ready | Machine: CNC 6040 | Units: mm                  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
