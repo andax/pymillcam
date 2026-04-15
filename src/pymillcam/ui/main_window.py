@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from pymillcam.core.commands import CommandStack
-from pymillcam.core.geometry import GeometryLayer
+from pymillcam.core.containment import build_pocket_regions
+from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.operations import (
     GeometryRef,
     OffsetSide,
@@ -671,26 +672,61 @@ class MainWindow(QMainWindow):
         if not targets:
             return
         new_op_ids: list[str] = []
-        description = (
-            "Add Pocket" if len(targets) == 1 else f"Add {len(targets)} Pockets"
-        )
 
         def mutate(project: Project) -> None:
             tc = self._create_tool_controller_for(project)
             project.tool_controllers.append(tc)
+            # Build the containment tree from the selection so that
+            # boundary + islands selected together collapse into a
+            # single PocketOp per top-level boundary. Selecting a single
+            # contour preserves the old one-op-per-selection behavior.
+            layer_by_name = {layer.name: layer for layer in project.geometry_layers}
+            entities_by_ref: list[tuple[str, str, GeometryEntity]] = []
             for layer_name, entity_id in targets:
+                layer = layer_by_name.get(layer_name)
+                if layer is None:
+                    continue
+                entity = layer.find_entity(entity_id)
+                if entity is None:
+                    continue
+                entities_by_ref.append((layer_name, entity_id, entity))
+            entities = [trip[2] for trip in entities_by_ref]
+            ref_for_entity = {
+                id(trip[2]): GeometryRef(layer_name=trip[0], entity_id=trip[1])
+                for trip in entities_by_ref
+            }
+            regions = build_pocket_regions(entities)
+            if not regions:
+                # Fall back to one op per selected entity (open contours,
+                # invalid geometry, etc.). Lets the user still create
+                # ops they can edit.
+                for layer_name, entity_id in targets:
+                    op = PocketOp(
+                        name=f"Pocket {len(project.operations) + 1}",
+                        tool_controller_id=tc.tool_number,
+                        cut_depth=-3.0,
+                        geometry_refs=[
+                            GeometryRef(layer_name=layer_name, entity_id=entity_id)
+                        ],
+                    )
+                    project.operations.append(op)
+                    new_op_ids.append(op.id)
+                return
+            for boundary, islands in regions:
+                refs = [ref_for_entity[id(boundary)]]
+                refs.extend(ref_for_entity[id(i)] for i in islands)
                 op = PocketOp(
                     name=f"Pocket {len(project.operations) + 1}",
                     tool_controller_id=tc.tool_number,
                     cut_depth=-3.0,
-                    geometry_refs=[
-                        GeometryRef(layer_name=layer_name, entity_id=entity_id)
-                    ],
+                    geometry_refs=refs,
                 )
                 project.operations.append(op)
                 new_op_ids.append(op.id)
 
-        self._do_action(description, mutate)
+        self._do_action(
+            "Add Pocket" if len(targets) == 1 else "Add Pockets", mutate,
+        )
         if len(new_op_ids) == 1:
             self._select_operation_in_tree(new_op_ids[0])
 

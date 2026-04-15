@@ -774,11 +774,13 @@ def test_zigzag_finishing_ring_preserves_arcs_on_circle_pocket() -> None:
     lines."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = _circle_entity(radius=20.0)
-    _, finishing = _zigzag_strokes_and_finishing_ring(
+    _, finishing_rings = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
     )
-    assert len(finishing) == 1
-    assert isinstance(finishing[0], ArcSegment)
+    assert len(finishing_rings) == 1
+    boundary_ring = finishing_rings[0]
+    assert len(boundary_ring) == 1
+    assert isinstance(boundary_ring[0], ArcSegment)
 
 
 def test_zigzag_angle_deg_rotates_strokes() -> None:
@@ -1129,3 +1131,245 @@ def test_zigzag_climb_and_conventional_reverse_finishing_ring() -> None:
     # Same four corners; order differs.
     assert sorted(last_four_feeds(climb)) == sorted(last_four_feeds(conv))
     assert last_four_feeds(climb) != last_four_feeds(conv)
+
+
+# ---------- islands -------------------------------------------------------
+
+def _project_with_island_pocket(
+    *,
+    boundary_w: float = 50.0,
+    boundary_h: float = 50.0,
+    island_radius: float = 5.0,
+    cut_depth: float = -3.0,
+    stepover: float = 2.0,
+    tool_diameter: float = 3.0,
+    strategy: PocketStrategy = PocketStrategy.OFFSET,
+) -> tuple[Project, PocketOp, GeometryEntity, GeometryEntity]:
+    boundary = GeometryEntity(
+        segments=_rect_segments(boundary_w, boundary_h), closed=True,
+    )
+    cx, cy = boundary_w / 2, boundary_h / 2
+    island = GeometryEntity(
+        segments=[ArcSegment(
+            center=(cx, cy), radius=island_radius,
+            start_angle_deg=0.0, sweep_deg=360.0,
+        )],
+        closed=True,
+    )
+    layer = GeometryLayer(name="L", entities=[boundary, island])
+    tool = Tool(name="flat", geometry={
+        "diameter": tool_diameter, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+    op = PocketOp(
+        name="Pocket+Island",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=boundary.id),
+            GeometryRef(layer_name=layer.name, entity_id=island.id),
+        ],
+        cut_depth=cut_depth,
+        stepover=stepover,
+        strategy=strategy,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op],
+    )
+    return project, op, boundary, island
+
+
+def test_offset_with_island_emits_rings_around_both_walls() -> None:
+    """A pocket with one circular island should emit rings tracing both
+    the outer boundary AND the island wall. With buffer-based offsets,
+    the first iteration's polygon-with-holes contributes one exterior
+    plus one interior ring."""
+    project, op, _, _ = _project_with_island_pocket()
+    tp = generate_pocket_toolpath(op, project)
+    feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.x is not None and i.y is not None
+    ]
+    # Sanity: feeds should hit both far-from-center XY (boundary wall)
+    # and close-to-center XY (island wall).
+    cx, cy = 25.0, 25.0
+    distances = [math.hypot(f.x - cx, f.y - cy) for f in feeds]
+    assert max(distances) > 20.0  # boundary kerf
+    assert min(distances) < 10.0  # island kerf
+
+
+def test_offset_with_island_retracts_between_disjoint_groups() -> None:
+    """Buffer iterations may produce MultiPolygon when the eroded
+    boundary splits around an island. Each Polygon's rings are emitted
+    as a 'group' with retract → rapid → plunge between groups."""
+    # An island close to the boundary forces a split early.
+    project, op, _, _ = _project_with_island_pocket(
+        boundary_w=40.0, boundary_h=40.0, island_radius=15.0,
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Look for the retract pattern: RAPID z=clearance, RAPID x/y, FEED z=pass_z.
+    rapids = [i for i in tp.instructions if i.type is MoveType.RAPID]
+    feed_z_only = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.x is None
+    ]
+    # At minimum: per-pass init retract + per-pass plunge. With island
+    # splitting we expect EXTRA mid-pass retracts/plunges.
+    assert len(rapids) > 3
+    assert len(feed_z_only) > 1
+
+
+def test_offset_with_island_too_close_for_tool_raises() -> None:
+    """If the island is too close to the boundary for the tool to fit
+    in any region, no rings are produced and we error."""
+    # 5x5 boundary with a 2.4mm island leaves only ~0.1mm of clearance
+    # between island wall and boundary on each side — too tight even
+    # for the adaptive last pass to find a meaningful ring.
+    project, op, _, _ = _project_with_island_pocket(
+        boundary_w=5.0, boundary_h=5.0, island_radius=2.4,
+        tool_diameter=3.0,
+    )
+    with pytest.raises(PocketGenerationError, match="tool too large"):
+        generate_pocket_toolpath(op, project)
+
+
+def test_zigzag_with_island_emits_finishing_ring_per_wall() -> None:
+    """ZIGZAG pocket with one island should emit two finishing rings —
+    boundary + island wall. The island ring is reached via retract +
+    rapid + plunge from the boundary ring (disjoint connector)."""
+    project, op, _, _ = _project_with_island_pocket(
+        strategy=PocketStrategy.ZIGZAG,
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Each pass: count the retracts to clearance after the strokes —
+    # one retract per island finishing ring (boundary uses feed-at-depth).
+    rapid_to_clearance = [
+        i for i in tp.instructions
+        if i.type is MoveType.RAPID
+        and i.z is not None
+        and math.isclose(i.z, 3.0, abs_tol=1e-6)
+    ]
+    # Single pass at -3, with one island: at least one mid-pass retract
+    # for the island finishing ring (plus the per-pass retract before
+    # the next pass — but here it's a single pass so no extra).
+    assert len(rapid_to_clearance) >= 1
+
+
+def test_multiple_disjoint_pockets_share_op_settings() -> None:
+    """Two disjoint boundaries selected for one PocketOp should both be
+    cut with the same tool / depth / strategy. Engine emits both regions
+    in selection order."""
+    b1 = GeometryEntity(segments=_rect_segments(20, 20), closed=True)
+    # Translate b2 by 50 in X.
+    b2_segs = [
+        LineSegment(start=(s.start[0] + 50, s.start[1]),
+                    end=(s.end[0] + 50, s.end[1]))
+        for s in _rect_segments(20, 20)
+    ]
+    b2 = GeometryEntity(segments=b2_segs, closed=True)
+    layer = GeometryLayer(name="L", entities=[b1, b2])
+    tool = Tool(name="flat", geometry={
+        "diameter": 3.0, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+    op = PocketOp(
+        name="Two pockets",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=b1.id),
+            GeometryRef(layer_name=layer.name, entity_id=b2.id),
+        ],
+        cut_depth=-3.0, stepover=2.0,
+        strategy=PocketStrategy.OFFSET,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op],
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Expect XY rapids hitting both pockets' regions.
+    xy_rapids = [
+        i for i in tp.instructions
+        if i.type is MoveType.RAPID and i.x is not None
+    ]
+    xs = [r.x for r in xy_rapids]
+    assert any(x < 25 for x in xs)  # b1 region (centered ~10)
+    assert any(x > 30 for x in xs)  # b2 region (centered ~60)
+
+
+def test_offset_with_islands_iterates_to_pocket_centre() -> None:
+    """Regression: with multiple islands the buffer can return a
+    GeometryCollection (mixed Polygon/LineString) at intermediate
+    distances. The previous code bailed out, leaving the centre uncut
+    even though stepover was small enough to fill it. Verify that the
+    iteration covers the full pocket."""
+    from pymillcam.engine.pocket import _concentric_rings_with_islands
+
+    boundary = GeometryEntity(segments=[
+        ArcSegment(center=(0, 0), radius=50.0,
+                   start_angle_deg=0.0, sweep_deg=360.0)
+    ], closed=True)
+    islands = []
+    for i in range(6):
+        angle_rad = math.radians(i * 60.0)
+        cx = 40.0 * math.cos(angle_rad)
+        cy = 40.0 * math.sin(angle_rad)
+        islands.append(GeometryEntity(segments=[
+            ArcSegment(center=(cx, cy), radius=2.0,
+                       start_angle_deg=0.0, sweep_deg=360.0)
+        ], closed=True))
+
+    groups = _concentric_rings_with_islands(
+        boundary, islands, tool_radius=1.5, stepover=2.0,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.05,
+    )
+    # Tool radius 1.5 + 2 mm/iter: to reach pocket centre (radius 0)
+    # from outer radius 50, we need ~25 iterations.
+    assert len(groups) >= 15
+    # Smallest exterior radius across all groups should be near zero
+    # (within a few stepover-widths of centre).
+    smallest_max_radius = min(
+        max((s.start[0] ** 2 + s.start[1] ** 2) ** 0.5 for s in group[0])
+        for group in groups
+        if group and group[0]
+    )
+    assert smallest_max_radius < 5.0
+
+
+def test_pocket_with_no_closed_geometry_raises() -> None:
+    """An empty geometry_refs (or all-open) should raise — no boundary
+    means no pocket region."""
+    open_chain = GeometryEntity(
+        segments=[LineSegment(start=(0, 0), end=(10, 0))], closed=False,
+    )
+    layer = GeometryLayer(name="L", entities=[open_chain])
+    tool = Tool(name="flat", geometry={
+        "diameter": 3.0, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+    op = PocketOp(
+        name="Bad",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=open_chain.id),
+        ],
+        cut_depth=-3.0, stepover=2.0,
+        strategy=PocketStrategy.OFFSET,
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op],
+    )
+    with pytest.raises(PocketGenerationError, match="no closed boundary"):
+        generate_pocket_toolpath(op, project)

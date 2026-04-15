@@ -84,8 +84,39 @@ Phase 2 progress (ongoing):
   (default) + HELICAL strategies and HELICAL→LINEAR→PLUNGE fallback chain.
   LINEAR ramp occupies the last `ramp_length` arc of the first ring and ends at
   `first_ring[0].start`, so the full ring runs at pass depth with no witness.
-- Pocket zigzag / spiral / islands — not yet.
-- Drill, tabs, tool library, machine definitions — not yet.
+- ✅ Pocket ZIGZAG (parallel raster strokes, arc-preserving finishing
+  ring, `angle_deg` rotation, LINEAR ramp with back-and-forth on short
+  first strokes).
+- ✅ Pocket islands (containment-tree inference at toolpath time:
+  `core/containment.build_pocket_regions` groups selected closed
+  contours into (boundary, [islands]) regions; even-depth contours are
+  boundaries, odd-depth are islands, nested pockets fall out via
+  alternation). OFFSET emits ring groups (one per Polygon in the
+  buffer-with-holes result) with retract+rapid+plunge between disjoint
+  groups. ZIGZAG subtracts dilated islands from the machinable polygon
+  and emits one finishing ring per island wall (also retract between).
+  Multiple disjoint boundaries selected for one PocketOp become
+  multiple regions cut with the same settings.
+- ✅ Profile tabs (rectangular, auto-spaced by arc-length, multi-depth
+  aware with `effective_z = max(planned_z(s), tab_z(s))`; coexists with
+  on-contour ramp).
+- Pocket SPIRAL — not yet.
+- Drill, tool library, machine definitions — not yet.
+
+Pocket islands known limitations:
+  - OFFSET with islands uses Shapely buffer (chord-discretized), not
+    the analytical arc-preserving offsetter. Arc preservation is
+    deferred until the analytical offsetter learns about holes.
+  - ZIGZAG strokes that get split by an island into multiple disjoint
+    pieces still use feed-at-depth between pieces (the old multi-region
+    safety hole). Use OFFSET for pockets where this would crash the
+    cutter into an island.
+  - When stepover doesn't divide the wall thickness evenly, the
+    OFFSET buffer-iteration would otherwise stop one stepover short of
+    the centerline, leaving a sliver. The engine emits an "adaptive
+    last pass" at half-stepover past the last successful distance to
+    close the residual; skipped if the resulting polygon area is
+    < `stepover²` (avoids microscopic Shapely artefacts).
 
 `ProjectSettings.chord_tolerance` defaults to 0.02 mm (was 0.05 in early
 Phase 1). Per-op override via the Properties panel.

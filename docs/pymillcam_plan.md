@@ -778,10 +778,16 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   fallback to LINEAR, finishing ring rotated to start near last stroke)
 - ✅ Spindle lifecycle: post-processor owns program-end M5; engine emits
   configurable warmup dwell (`ProjectSettings.spindle_warmup_s`) after M3
+- ✅ Profile tabs (rectangular, auto-spaced by arc-length, multi-depth
+  aware, coexists with on-contour ramp via `max(planned_z, tab_z)`)
+- ✅ Pocket islands (containment-tree inference; OFFSET ring-groups
+  with retract between disjoint pieces; ZIGZAG with per-wall finishing
+  rings; multiple disjoint boundaries per op share settings)
 - Pocket SPIRAL strategy
-- Pocket island / hole detection
 - Drill operation (simple and peck cycles)
-- Tab generation for profile operations
+- Edit op geometry refs after creation (currently refs are set at
+  Add-Op time and not editable; viewport should highlight an op's
+  refs and offer Add-to-active-op / Remove-from-active-op actions)
 - User-selectable contour start position P₀ (low priority — the lead/ramp
   machinery is in place; P₀ currently falls out of the offsetter's
   arbitrary polygon seed. Let the user click a point on the viewport to

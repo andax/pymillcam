@@ -34,8 +34,15 @@ import math
 from collections.abc import Sequence
 
 from shapely.affinity import rotate as shapely_rotate
-from shapely.geometry import LineString, MultiLineString, Point, Polygon
+from shapely.geometry import (
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+)
 
+from pymillcam.core.containment import build_pocket_regions
 from pymillcam.core.geometry import GeometryEntity
 from pymillcam.core.offsetter import OffsetError, offset_closed_contour
 from pymillcam.core.operations import (
@@ -84,20 +91,32 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
         else project.settings.chord_tolerance
     )
     tool_radius = float(tool_controller.tool.geometry["diameter"]) / 2.0
+    entities = [
+        _resolve_entity(ref.layer_name, ref.entity_id, project)
+        for ref in op.geometry_refs
+    ]
     preview: list[Segment] = []
-    for ref in op.geometry_refs:
-        entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
+    for boundary, islands in build_pocket_regions(entities):
         if op.strategy is PocketStrategy.ZIGZAG:
-            strokes, finishing_ring = _zigzag_strokes_and_finishing_ring(
-                entity, tool_radius, op.stepover, op.direction,
-                op.angle_deg, chord_tolerance,
+            strokes, finishing_rings = _zigzag_strokes_and_finishing_ring(
+                boundary, tool_radius, op.stepover, op.direction,
+                op.angle_deg, chord_tolerance, islands=islands,
             )
             for stroke in strokes:
                 preview.extend(stroke)
-            preview.extend(finishing_ring)
+            for ring in finishing_rings:
+                preview.extend(ring)
+        elif islands:
+            ring_groups = _concentric_rings_with_islands(
+                boundary, islands, tool_radius, op.stepover,
+                op.direction, chord_tolerance,
+            )
+            for group in ring_groups:
+                for ring in group:
+                    preview.extend(ring)
         else:
             rings = _concentric_rings(
-                entity, tool_radius, op.stepover, op.direction,
+                boundary, tool_radius, op.stepover, op.direction,
                 chord_tolerance,
             )
             for ring in rings:
@@ -151,14 +170,22 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             )
         )
 
-    for ref in op.geometry_refs:
-        entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
+    entities = [
+        _resolve_entity(ref.layer_name, ref.entity_id, project)
+        for ref in op.geometry_refs
+    ]
+    regions = build_pocket_regions(entities)
+    if not regions:
+        raise PocketGenerationError(
+            f"Pocket {op.name!r}: no closed boundary in the selected geometry."
+        )
+    for boundary, islands in regions:
         if op.strategy is PocketStrategy.ZIGZAG:
-            strokes, finishing_ring = _zigzag_strokes_and_finishing_ring(
-                entity, tool_radius, op.stepover, op.direction,
-                op.angle_deg, chord_tolerance,
+            strokes, finishing_rings = _zigzag_strokes_and_finishing_ring(
+                boundary, tool_radius, op.stepover, op.direction,
+                op.angle_deg, chord_tolerance, islands=islands,
             )
-            if not strokes and not finishing_ring:
+            if not strokes and not finishing_rings:
                 raise PocketGenerationError(
                     f"Pocket {op.name!r}: tool too large for the selected "
                     f"boundary (no zigzag strokes fit at stepover="
@@ -170,7 +197,31 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             _emit_zigzag(
                 instructions,
                 strokes=strokes,
-                finishing_ring=finishing_ring,
+                finishing_rings=finishing_rings,
+                tool_controller=tool_controller,
+                z_levels=z_levels,
+                safe_height=safe_height,
+                clearance=clearance,
+                ramp_config=op.ramp,
+                resolved_strategy=resolved_ramp,
+            )
+            continue
+        if islands:
+            ring_groups = _concentric_rings_with_islands(
+                boundary, islands, tool_radius, op.stepover,
+                op.direction, chord_tolerance,
+            )
+            rings = [ring for group in ring_groups for ring in group]
+            if not rings:
+                raise PocketGenerationError(
+                    f"Pocket {op.name!r}: tool too large for the selected boundary "
+                    f"(no rings fit at stepover={op.stepover} mm, tool radius="
+                    f"{tool_radius} mm)."
+                )
+            resolved_ramp = _resolve_ramp_strategy(op.ramp, rings, stepdown)
+            _emit_ring_groups(
+                instructions,
+                ring_groups,
                 tool_controller=tool_controller,
                 z_levels=z_levels,
                 safe_height=safe_height,
@@ -180,7 +231,7 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             )
             continue
         rings = _concentric_rings(
-            entity, tool_radius, op.stepover, op.direction, chord_tolerance
+            boundary, tool_radius, op.stepover, op.direction, chord_tolerance
         )
         if not rings:
             raise PocketGenerationError(
@@ -301,6 +352,152 @@ def _concentric_rings(
         rings.append(_apply_direction(ring, direction))
         offset += stepover
     return rings
+
+
+def _concentric_rings_with_islands(
+    boundary: GeometryEntity,
+    islands: list[GeometryEntity],
+    tool_radius: float,
+    stepover: float,
+    direction: MillingDirection,
+    chord_tolerance: float,
+) -> list[list[list[Segment]]]:
+    """Build inward concentric rings from a boundary-with-holes.
+
+    Returns a list of "ring groups". Each group is the rings produced by
+    one buffer iteration of one connected machinable region — an exterior
+    plus zero or more interiors. Within a group, the engine can transit
+    between rings via feed-at-depth; between groups the engine retracts
+    and rapids, because adjacent groups can be separated by uncut island
+    material.
+
+    Arc preservation isn't supported here (the analytical offsetter
+    doesn't take holes); the buffer fallback discretises arcs at the
+    op's chord_tolerance.
+    """
+    if not boundary.segments or not boundary.closed:
+        raise PocketGenerationError(
+            "Pocket operation requires a closed boundary contour"
+        )
+    if tool_radius <= 0:
+        raise PocketGenerationError(
+            f"Tool radius must be positive, got {tool_radius}"
+        )
+    if stepover <= 0:
+        raise PocketGenerationError(f"Stepover must be positive, got {stepover}")
+
+    boundary_poly = segments_to_shapely(
+        boundary.segments, closed=True, tolerance=chord_tolerance
+    )
+    if not isinstance(boundary_poly, Polygon):
+        raise PocketGenerationError(
+            f"Boundary must discretize to a Polygon; got {boundary_poly.geom_type}"
+        )
+    hole_rings: list[list[tuple[float, float]]] = []
+    for island in islands:
+        island_poly = segments_to_shapely(
+            island.segments, closed=True, tolerance=chord_tolerance
+        )
+        if not isinstance(island_poly, Polygon):
+            raise PocketGenerationError(
+                f"Island must discretize to a Polygon; got {island_poly.geom_type}"
+            )
+        hole_rings.append([(c[0], c[1]) for c in island_poly.exterior.coords])
+    machinable = Polygon(
+        [(c[0], c[1]) for c in boundary_poly.exterior.coords],
+        holes=hole_rings,
+    )
+
+    groups: list[list[list[Segment]]] = []
+    distance = tool_radius
+    safety_cap = 10_000
+    for _ in range(safety_cap):
+        offset = machinable.buffer(-distance, join_style="mitre")
+        if offset.is_empty:
+            polys: list[Polygon] = []
+        else:
+            # Buffer-of-polygon-with-holes can return a GeometryCollection
+            # mixing Polygons with degenerate LineStrings/Points as the
+            # polygon pinches off around an island. Walk recursively so we
+            # don't stop iterating just because an intermediate result has
+            # mixed types — there's still material to clear.
+            polys = _extract_polygons(offset)
+        if not polys:
+            # Adaptive last pass: when the next regular iteration is
+            # empty, the previous ring may still be > tool_diameter from
+            # the opposing wall's last ring (when stepover doesn't
+            # divide the wall thickness evenly). Try one ring at
+            # half-stepover past the last successful distance to close
+            # the residual. Skip if the resulting polygon is too small
+            # to be a meaningful cut (avoids emitting microscopic
+            # multi-polygon artefacts from Shapely's near-empty results).
+            half_d = distance - stepover / 2.0
+            half_polys = _extract_polygons(
+                machinable.buffer(-half_d, join_style="mitre")
+            )
+            min_area = stepover * stepover  # ~one stepover-square
+            for poly in half_polys:
+                if poly.area < min_area:
+                    continue
+                g = _polygon_to_ring_group(poly, direction)
+                if g:
+                    groups.append(g)
+            break
+        for poly in polys:
+            g = _polygon_to_ring_group(poly, direction)
+            if g:
+                groups.append(g)
+        distance += stepover
+    return groups
+
+
+def _polygon_to_ring_group(
+    poly: Polygon, direction: MillingDirection
+) -> list[list[Segment]]:
+    group: list[list[Segment]] = []
+    ext_ring = _coords_to_line_chain(
+        [(c[0], c[1]) for c in poly.exterior.coords]
+    )
+    if ext_ring:
+        group.append(_apply_direction(ext_ring, direction))
+    for interior in poly.interiors:
+        int_ring = _coords_to_line_chain(
+            [(c[0], c[1]) for c in interior.coords]
+        )
+        if not int_ring:
+            continue
+        # Holes are CW from Shapely; flip to match milling-direction
+        # convention (same logic as the boundary).
+        group.append(_apply_direction(int_ring, direction))
+    return group
+
+
+def _extract_polygons(geom: object) -> list[Polygon]:
+    """Recursively extract non-empty Polygons from any Shapely geometry."""
+    if isinstance(geom, Polygon):
+        return [geom] if not geom.is_empty else []
+    if isinstance(geom, MultiPolygon):
+        return [p for p in geom.geoms if not p.is_empty]
+    inner_geoms = getattr(geom, "geoms", None)
+    if inner_geoms is None:
+        return []
+    out: list[Polygon] = []
+    for sub in inner_geoms:
+        out.extend(_extract_polygons(sub))
+    return out
+
+
+def _coords_to_line_chain(
+    coords: list[tuple[float, float]],
+) -> list[Segment]:
+    """Build a closed LineSegment chain from a Shapely-style ring coord list."""
+    if len(coords) < 2:
+        return []
+    return [
+        LineSegment(start=(coords[i][0], coords[i][1]),
+                    end=(coords[i + 1][0], coords[i + 1][1]))
+        for i in range(len(coords) - 1)
+    ]
 
 
 def _offset_boundary_inward(
@@ -453,6 +650,98 @@ def _emit_rings(
         if not is_last:
             # Retract and reposition above entry_xy so the next pass
             # starts from the same (entry_xy, clearance) state.
+            instructions.append(IRInstruction(type=MoveType.RAPID, z=clearance))
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.RAPID, x=entry_xy[0], y=entry_xy[1]
+                )
+            )
+
+
+def _emit_ring_groups(
+    instructions: list[IRInstruction],
+    ring_groups: list[list[list[Segment]]],
+    *,
+    tool_controller: ToolController,
+    z_levels: list[float],
+    safe_height: float,
+    clearance: float,
+    ramp_config: RampConfig,
+    resolved_strategy: RampStrategy,
+) -> None:
+    """Emit ring groups for one or more Z passes.
+
+    Within a group: feed-at-depth between rings (the no-island
+    `_emit_ring_chain` behavior). Between groups: retract → rapid →
+    plunge so the tool doesn't drag through uncut island material.
+
+    Ramp entry uses the FIRST group's first ring (typically the
+    outermost exterior of the first iteration).
+    """
+    if not ring_groups or not z_levels:
+        return
+    first_group = ring_groups[0]
+    first_ring = first_group[0]
+
+    ramp_length = (
+        _linear_ramp_length(ramp_config, stepdown=_ramp_stepdown(z_levels))
+        if resolved_strategy is RampStrategy.LINEAR
+        else 0.0
+    )
+    entry_xy = _strategy_entry_xy(resolved_strategy, first_ring, ramp_length)
+
+    instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
+    instructions.append(
+        IRInstruction(type=MoveType.RAPID, x=entry_xy[0], y=entry_xy[1])
+    )
+    instructions.append(IRInstruction(type=MoveType.RAPID, z=clearance))
+
+    helix_plan: _HelixPlan | None = None
+    if resolved_strategy is RampStrategy.HELICAL:
+        helix_plan = _build_helix_plan(first_ring, ramp_config)
+
+    for pass_index, z in enumerate(z_levels):
+        is_last = pass_index == len(z_levels) - 1
+        prev_z = 0.0 if pass_index == 0 else z_levels[pass_index - 1]
+
+        # First group: descend with the resolved ramp strategy and cut.
+        if resolved_strategy is RampStrategy.HELICAL and helix_plan is not None:
+            _emit_helical_pass_body(
+                instructions, first_group, plan=helix_plan,
+                prev_z=prev_z, pass_z=z, tool_controller=tool_controller,
+            )
+        elif resolved_strategy is RampStrategy.LINEAR:
+            _emit_linear_pass_body(
+                instructions, first_group, ramp_length=ramp_length,
+                prev_z=prev_z, pass_z=z, tool_controller=tool_controller,
+            )
+        else:
+            _emit_plunge_pass_body(
+                instructions, first_group, pass_z=z,
+                tool_controller=tool_controller,
+            )
+
+        # Subsequent groups: retract → rapid to next group's first ring
+        # start → plunge → cut. Safe across uncut island material.
+        for group in ring_groups[1:]:
+            group_start = group[0][0].start
+            instructions.append(
+                IRInstruction(type=MoveType.RAPID, z=clearance)
+            )
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.RAPID, x=group_start[0], y=group_start[1]
+                )
+            )
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.FEED, z=z, f=tool_controller.feed_z
+                )
+            )
+            _emit_ring_chain(instructions, group, tool_controller.feed_xy)
+
+        if not is_last:
+            # Retract and reposition above first group's entry for next pass.
             instructions.append(IRInstruction(type=MoveType.RAPID, z=clearance))
             instructions.append(
                 IRInstruction(
@@ -910,24 +1199,31 @@ def _zigzag_strokes_and_finishing_ring(
     direction: MillingDirection,
     angle_deg: float,
     chord_tolerance: float,
-) -> tuple[list[list[Segment]], list[Segment]]:
-    """Generate zigzag raster strokes plus the finishing contour ring.
+    *,
+    islands: list[GeometryEntity] | None = None,
+) -> tuple[list[list[Segment]], list[list[Segment]]]:
+    """Generate zigzag raster strokes plus per-wall finishing rings.
 
     Strokes are horizontal in a coordinate frame rotated by `angle_deg`
     CCW from world +X, spaced by `stepover` from the machinable
     polygon's rotated-bbox bottom upward. Each scan line is clipped
     against the machinable polygon (entity boundary buffered inward by
-    `tool_radius`); a single LineString clip becomes one stroke, and a
-    MultiLineString clip becomes several ordered by X. Strokes alternate
-    direction row-by-row for true zigzag.
+    `tool_radius`, with each island buffered outward by tool_radius and
+    subtracted). A single LineString clip becomes one stroke; a
+    MultiLineString clip (e.g., a scan line crossing an island) becomes
+    several pieces ordered by X. Strokes alternate direction row-by-row
+    for true zigzag.
 
-    The finishing ring is the outermost concentric offset (same as
-    OFFSET strategy's `rings[0]`), arc-preserved where the analytical
-    offsetter handles the shape. Its travel direction respects
-    `direction` (climb = CW, conventional = CCW inside a pocket).
+    Finishing rings: one for the boundary (arc-preserved when the
+    analytical offsetter handles the shape) and one for each island
+    (the island contour offset OUTWARD by tool_radius so the cutter edge
+    is flush with the island wall). Returns an empty
+    `(strokes, finishing_rings)` pair when the tool is too large to fit.
 
-    Returns an empty `(strokes, finishing_ring)` pair when the tool is
-    too large to fit.
+    Known limitation: connectors between disjoint pieces of the same
+    scan-line stroke remain feed-at-depth; with islands, those connectors
+    can cross the island. Use OFFSET for islanded pockets until this
+    safety fix lands.
     """
     if not entity.segments:
         raise PocketGenerationError(
@@ -943,24 +1239,56 @@ def _zigzag_strokes_and_finishing_ring(
         )
     if stepover <= 0:
         raise PocketGenerationError(f"Stepover must be positive, got {stepover}")
+    islands = islands or []
 
-    # Reuse the OFFSET machinery's first ring as the finishing pass —
-    # same tool-radius offset, same direction handling, arc-preserved.
+    # Boundary finishing ring: arc-preserved where possible.
     offset_segments = _offset_boundary_inward(
         entity, tool_radius, chord_tolerance
     )
     if offset_segments is None:
         return [], []
-    finishing_ring = _apply_direction(offset_segments, direction)
+    finishing_rings = [_apply_direction(offset_segments, direction)]
 
     machinable = segments_to_shapely(
         offset_segments, closed=True, tolerance=chord_tolerance
     )
     if not isinstance(machinable, Polygon) or machinable.is_empty:
-        return [], finishing_ring
+        return [], finishing_rings
 
+    # Subtract each island (dilated by tool_radius) from the machinable
+    # polygon and emit a finishing ring per island.
+    for island in islands:
+        island_poly = segments_to_shapely(
+            island.segments, closed=True, tolerance=chord_tolerance
+        )
+        if not isinstance(island_poly, Polygon):
+            continue
+        machinable = machinable.difference(island_poly.buffer(tool_radius))
+        # Island wall finishing ring: island contour offset OUTWARD by
+        # tool_radius (cutter edge flush with the island). Use Shapely
+        # buffer — the analytical outward-offsetter is for boundaries.
+        outward = island_poly.buffer(tool_radius, join_style="mitre")
+        if isinstance(outward, Polygon) and not outward.is_empty:
+            ring_segs = _coords_to_line_chain(
+                [(c[0], c[1]) for c in outward.exterior.coords]
+            )
+            if ring_segs:
+                # Islands are obstacles — finishing direction flips so
+                # CLIMB still corresponds to the cutter chip-thickness
+                # convention against this wall.
+                flip_direction = (
+                    MillingDirection.CONVENTIONAL
+                    if direction is MillingDirection.CLIMB
+                    else MillingDirection.CLIMB
+                )
+                finishing_rings.append(
+                    _apply_direction(ring_segs, flip_direction)
+                )
+
+    if not isinstance(machinable, Polygon) or machinable.is_empty:
+        return [], finishing_rings
     strokes = _generate_zigzag_strokes(machinable, stepover, angle_deg)
-    return strokes, finishing_ring
+    return strokes, finishing_rings
 
 
 def _generate_zigzag_strokes(
@@ -1088,7 +1416,7 @@ def _emit_zigzag(
     instructions: list[IRInstruction],
     *,
     strokes: list[list[Segment]],
-    finishing_ring: list[Segment],
+    finishing_rings: list[list[Segment]],
     tool_controller: ToolController,
     z_levels: list[float],
     safe_height: float,
@@ -1096,14 +1424,15 @@ def _emit_zigzag(
     ramp_config: RampConfig,
     resolved_strategy: RampStrategy,
 ) -> None:
-    """Emit zigzag strokes + finishing contour for one or more Z passes.
+    """Emit zigzag strokes + finishing contours for one or more Z passes.
 
     Mirrors `_emit_rings`' lifecycle: rapid to safe height, rapid to
     entry XY, rapid down to clearance, then per pass ramp down → strokes
-    → finishing ring → (if not last) retract to clearance + reposition
-    to entry XY.
+    → finishing rings (boundary first, then each island wall, with
+    retract+rapid+plunge between disjoint rings) → (if not last) retract
+    to clearance + reposition to entry XY.
     """
-    if not z_levels or (not strokes and not finishing_ring):
+    if not z_levels or (not strokes and not finishing_rings):
         return
 
     # For LINEAR zigzag we precompute the number of ramp "legs" needed
@@ -1123,7 +1452,7 @@ def _emit_zigzag(
         )
 
     if not strokes:
-        entry_xy = finishing_ring[0].start
+        entry_xy = finishing_rings[0][0].start
     elif resolved_strategy is RampStrategy.LINEAR:
         entry_xy = _zigzag_linear_entry_xy(strokes[0], n_legs)
     else:
@@ -1144,29 +1473,47 @@ def _emit_zigzag(
                 _emit_zigzag_linear_pass_body(
                     instructions,
                     strokes=strokes,
-                    finishing_ring=finishing_ring,
+                    finishing_rings=finishing_rings,
                     ramp_config=ramp_config,
                     n_legs=n_legs,
                     prev_z=prev_z,
                     pass_z=z,
                     tool_controller=tool_controller,
+                    clearance=clearance,
                 )
             else:
                 _emit_zigzag_plunge_pass_body(
                     instructions,
                     strokes=strokes,
-                    finishing_ring=finishing_ring,
+                    finishing_rings=finishing_rings,
                     pass_z=z,
                     tool_controller=tool_controller,
+                    clearance=clearance,
                 )
         else:
-            # No strokes — just finishing pass. Plunge then walk ring.
-            instructions.append(
-                IRInstruction(type=MoveType.FEED, z=z, f=tool_controller.feed_z)
-            )
-            _emit_ring_chain(
-                instructions, [finishing_ring], tool_controller.feed_xy
-            )
+            # No strokes — just finishing rings. Plunge for the first;
+            # subsequent rings retract+rapid+plunge between.
+            for ring_index, ring in enumerate(finishing_rings):
+                if ring_index > 0:
+                    ring_start = ring[0].start
+                    instructions.append(
+                        IRInstruction(type=MoveType.RAPID, z=clearance)
+                    )
+                    instructions.append(
+                        IRInstruction(
+                            type=MoveType.RAPID,
+                            x=ring_start[0],
+                            y=ring_start[1],
+                        )
+                    )
+                instructions.append(
+                    IRInstruction(
+                        type=MoveType.FEED, z=z, f=tool_controller.feed_z
+                    )
+                )
+                _emit_ring_chain(
+                    instructions, [ring], tool_controller.feed_xy
+                )
 
         if not is_last:
             instructions.append(IRInstruction(type=MoveType.RAPID, z=clearance))
@@ -1227,12 +1574,13 @@ def _emit_zigzag_linear_pass_body(
     instructions: list[IRInstruction],
     *,
     strokes: list[list[Segment]],
-    finishing_ring: list[Segment],
+    finishing_rings: list[list[Segment]],
     ramp_config: RampConfig,
     n_legs: int,
     prev_z: float,
     pass_z: float,
     tool_controller: ToolController,
+    clearance: float,
 ) -> None:
     """Pass body for LINEAR zigzag.
 
@@ -1272,9 +1620,10 @@ def _emit_zigzag_linear_pass_body(
         _emit_zigzag_plunge_pass_body(
             instructions,
             strokes=strokes,
-            finishing_ring=finishing_ring,
+            finishing_rings=finishing_rings,
             pass_z=pass_z,
             tool_controller=tool_controller,
+            clearance=clearance,
         )
         return
 
@@ -1342,8 +1691,11 @@ def _emit_zigzag_linear_pass_body(
         instructions,
         current_xy=strokes[0][-1].end,
         remaining_strokes=strokes[1:],
-        finishing_ring=finishing_ring,
+        finishing_rings=finishing_rings,
+        pass_z=pass_z,
+        clearance=clearance,
         feed_xy=tool_controller.feed_xy,
+        feed_z=tool_controller.feed_z,
     )
 
 
@@ -1351,12 +1703,13 @@ def _emit_zigzag_plunge_pass_body(
     instructions: list[IRInstruction],
     *,
     strokes: list[list[Segment]],
-    finishing_ring: list[Segment],
+    finishing_rings: list[list[Segment]],
     pass_z: float,
     tool_controller: ToolController,
+    clearance: float,
 ) -> None:
     """Pass body for PLUNGE zigzag — feed straight down to pass_z at
-    stroke 1's start, then emit all strokes and the finishing ring."""
+    stroke 1's start, then emit all strokes and the finishing rings."""
     instructions.append(
         IRInstruction(type=MoveType.FEED, z=pass_z, f=tool_controller.feed_z)
     )
@@ -1366,8 +1719,11 @@ def _emit_zigzag_plunge_pass_body(
         instructions,
         current_xy=strokes[0][-1].end,
         remaining_strokes=strokes[1:],
-        finishing_ring=finishing_ring,
+        finishing_rings=finishing_rings,
+        pass_z=pass_z,
+        clearance=clearance,
         feed_xy=tool_controller.feed_xy,
+        feed_z=tool_controller.feed_z,
     )
 
 
@@ -1376,15 +1732,19 @@ def _emit_zigzag_remainder(
     *,
     current_xy: tuple[float, float],
     remaining_strokes: list[list[Segment]],
-    finishing_ring: list[Segment],
+    finishing_rings: list[list[Segment]],
+    pass_z: float,
+    clearance: float,
     feed_xy: float,
+    feed_z: float,
 ) -> None:
-    """Emit strokes after the first (each connected to the previous by
-    a feed move — true zigzag), then transit to the finishing ring and
-    walk it once. The finishing ring is rotated to start near the tool's
-    current XY so the transit from the last stroke's end is minimal
-    (zero for circles, one-corner-wide for rectangles) instead of
-    jumping to the offsetter's canonical ring start.
+    """Emit strokes after the first (each connected to the previous by a
+    feed move — true zigzag), then trace each finishing ring. The
+    BOUNDARY ring (index 0) connects via feed-at-depth from the last
+    stroke; ISLAND rings (index 1+) are reached via retract → rapid →
+    plunge so the tool doesn't drag through uncut island material.
+    Each ring is rotated so its traversal starts near the previous
+    end to keep the transit short.
     """
     tool_xy = current_xy
     for stroke in remaining_strokes:
@@ -1397,17 +1757,33 @@ def _emit_zigzag_remainder(
         for seg in stroke:
             _emit_segment(instructions, seg, feed_xy)
         tool_xy = stroke[-1].end
-    if not finishing_ring:
-        return
-    rotated = _rotate_ring_start_to_nearest(finishing_ring, tool_xy)
-    ring_start = rotated[0].start
-    instructions.append(
-        IRInstruction(
-            type=MoveType.FEED, x=ring_start[0], y=ring_start[1], f=feed_xy
-        )
-    )
-    for seg in rotated:
-        _emit_segment(instructions, seg, feed_xy)
+    for ring_index, ring in enumerate(finishing_rings):
+        if not ring:
+            continue
+        rotated = _rotate_ring_start_to_nearest(ring, tool_xy)
+        ring_start = rotated[0].start
+        if ring_index == 0:
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.FEED,
+                    x=ring_start[0], y=ring_start[1], f=feed_xy,
+                )
+            )
+        else:
+            instructions.append(
+                IRInstruction(type=MoveType.RAPID, z=clearance)
+            )
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.RAPID, x=ring_start[0], y=ring_start[1]
+                )
+            )
+            instructions.append(
+                IRInstruction(type=MoveType.FEED, z=pass_z, f=feed_z)
+            )
+        for seg in rotated:
+            _emit_segment(instructions, seg, feed_xy)
+        tool_xy = rotated[-1].end
 
 
 def _rotate_ring_start_to_nearest(
