@@ -200,9 +200,9 @@ def test_end_to_end_dxf_to_gcode_has_arcs_for_circular_contour(tmp_path: Path) -
     # Tool change and spindle commands emitted.
     assert "T1 M6" in gcode
     assert "M3 S18000" in gcode
-    # Two full-circle arcs (one per Z pass) with PLUNGE ramp — no
-    # discretized G1 chords along them.
-    assert gcode.count("G3") == 2
+    # Two semicircle arcs per pass × 2 passes = 4 G3 lines (full circles
+    # are split for portable G-code; see core.segments.split_full_circle).
+    assert gcode.count("G3") == 4
     # I/J refer to arc center relative to start — for a circle starting at
     # (35, 25) with centre (25, 25), that's I=-10 J=0.
     assert "I-10 J0" in gcode

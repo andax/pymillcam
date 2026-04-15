@@ -12,6 +12,7 @@ from pymillcam.core.segments import (
     LineSegment,
     _sample_arc,
     segments_to_shapely,
+    split_full_circle,
 )
 
 # ---------- LineSegment ----------------------------------------------------
@@ -135,6 +136,32 @@ def test_tighter_tolerance_produces_more_vertices() -> None:
     coarse = _sample_arc(arc, 0.1)
     fine = _sample_arc(arc, 0.001)
     assert len(fine) > len(coarse)
+
+
+def test_split_full_circle_into_two_semicircles() -> None:
+    arc = ArcSegment(center=(0, 0), radius=10.0, start_angle_deg=0.0, sweep_deg=360.0)
+    a, b = split_full_circle(arc)
+    assert a.sweep_deg == pytest.approx(180.0)
+    assert b.sweep_deg == pytest.approx(180.0)
+    assert a.start == pytest.approx(arc.start)
+    assert a.end == pytest.approx(b.start)
+    assert b.end == pytest.approx(arc.start)
+    # Distinct endpoints — that's the whole point.
+    assert a.end != pytest.approx(a.start)
+
+
+def test_split_full_circle_preserves_cw_orientation() -> None:
+    arc = ArcSegment(center=(0, 0), radius=10.0, start_angle_deg=0.0, sweep_deg=-360.0)
+    a, b = split_full_circle(arc)
+    assert a.sweep_deg == pytest.approx(-180.0)
+    assert b.sweep_deg == pytest.approx(-180.0)
+    assert a.ccw is False and b.ccw is False
+
+
+def test_split_full_circle_rejects_partial_arc() -> None:
+    arc = ArcSegment(center=(0, 0), radius=10.0, start_angle_deg=0.0, sweep_deg=90.0)
+    with pytest.raises(ValueError, match="full-circle"):
+        split_full_circle(arc)
 
 
 def test_mixed_line_and_arc_chain() -> None:

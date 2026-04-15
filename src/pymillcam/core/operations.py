@@ -76,11 +76,22 @@ class LeadConfig(BaseModel):
 
 
 class TabConfig(BaseModel):
+    """Tabs are bridges of stock left in place so the cut part doesn't
+    drift on the final pass.
+
+    `height` is the bridge thickness ABOVE `cut_depth`, not an absolute Z —
+    a 0.5 mm tab on a -6 mm cut leaves the tool riding at -5.5 mm over the
+    tab. The engine modulates Z per pass: passes shallower than the tab top
+    cut as normal; passes that would breach the tab top ramp up to it over
+    `ramp_length`, traverse `width`, then ramp down. `count` tabs are
+    auto-placed by arc-length along the contour, evenly spaced.
+    """
     enabled: bool = False
     style: TabStyle = TabStyle.RECTANGULAR
     count: int = 4
     width: float = 5.0
     height: float = 1.5
+    ramp_length: float = 1.5
     auto_place: bool = True
 
 

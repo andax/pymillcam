@@ -27,6 +27,7 @@ from pymillcam.core.operations import (
     ProfileOp,
     RampConfig,
     RampStrategy,
+    TabConfig,
 )
 from pymillcam.core.project import Project
 from pymillcam.core.segments import (
@@ -35,9 +36,18 @@ from pymillcam.core.segments import (
     Segment,
     reverse_segment_chain,
     segments_to_shapely,
+    split_full_circle,
+    split_segment_at_length,
 )
 from pymillcam.core.tools import ToolController
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
+from pymillcam.engine.tabs import (
+    TabPlacementError,
+    compute_tab_intervals,
+    effective_z_at,
+    emit_pass_with_tabs,
+    split_chain_at_lengths,
+)
 
 _LENGTH_EPSILON = 1e-9
 
@@ -133,6 +143,7 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
             lead_out_config=op.lead_out,
             offset_side=op.offset_side,
             ramp_config=op.ramp,
+            tabs=op.tabs,
         )
 
     instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
@@ -273,6 +284,7 @@ def _emit_contour_passes(
     lead_out_config: LeadConfig,
     offset_side: OffsetSide,
     ramp_config: RampConfig,
+    tabs: TabConfig,
 ) -> None:
     """Emit a profile's toolpath IR.
 
@@ -285,6 +297,12 @@ def _emit_contour_passes(
     When `ramp_config.strategy is PLUNGE`, or the contour isn't closed, or the
     required ramp distance exceeds the contour length, we fall back to a
     straight plunge at the contour start (no on-contour ramp).
+
+    Tabs (when enabled) modulate Z to ride over each tab's plateau. They
+    coexist with the on-contour ramp via `effective_z(s) = max(planned_z(s),
+    tab_z(s))` — a tab in the descent slice lifts the tool to tab_top
+    where the descent would otherwise cut through it. Same applies to the
+    cleanup pass and the ascent.
     """
     if not segments:
         return
@@ -305,9 +323,44 @@ def _emit_contour_passes(
     ) < 1e-6
     contour_length = sum(s.length for s in segments)
 
+    tab_intervals: list[tuple[float, float]] = []
+    tab_top_z = 0.0
+    if tabs.enabled:
+        if not is_closed_like:
+            raise ProfileGenerationError(
+                "Tabs require a closed contour; tabs only make sense when the "
+                "part would otherwise come free on the final pass."
+            )
+        if tabs.height >= abs(cut_depth):
+            raise ProfileGenerationError(
+                f"Tab height ({tabs.height} mm) must be less than cut depth "
+                f"({abs(cut_depth)} mm) — tab top would sit above the stock surface."
+            )
+        try:
+            tab_intervals = compute_tab_intervals(
+                contour_length, tabs.count, tabs.width, tabs.ramp_length
+            )
+        except TabPlacementError as exc:
+            raise ProfileGenerationError(str(exc)) from exc
+        tab_top_z = cut_depth + tabs.height
+
     use_ramp = _should_use_contour_ramp(
         ramp_config, is_closed_like, contour_length, z_levels[-1]
     )
+
+    # Pre-split the contour at every tab boundary so each piece is
+    # entirely inside or outside any ramp/plateau region. Per-pass code
+    # then computes z at piece ends without losing tab transitions.
+    if tabs.enabled:
+        tab_cuts: list[float] = []
+        for s_start, s_end in tab_intervals:
+            tab_cuts.extend(
+                [s_start, s_start + tabs.ramp_length,
+                 s_end - tabs.ramp_length, s_end]
+            )
+        tab_split_segments = split_chain_at_lengths(segments, tab_cuts)
+    else:
+        tab_split_segments = list(segments)
 
     instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
     instructions.append(IRInstruction(type=MoveType.RAPID, x=start_xy_x, y=start_xy_y))
@@ -328,7 +381,22 @@ def _emit_contour_passes(
         stepdown / math.tan(math.radians(ramp_config.angle_deg)) if use_ramp else 0.0
     )
     for pass_index, z in enumerate(z_levels):
-        if use_ramp:
+        if use_ramp and tabs.enabled:
+            descent_length = abs(z - prev_z) / math.tan(
+                math.radians(ramp_config.angle_deg)
+            )
+            _emit_ramp_pass_with_tabs(
+                instructions,
+                tab_split_segments,
+                prev_z=prev_z,
+                pass_z=z,
+                descent_length=descent_length,
+                tab_top_z=tab_top_z,
+                tab_intervals=tab_intervals,
+                tab_ramp_length=tabs.ramp_length,
+                feed_xy=tool_controller.feed_xy,
+            )
+        elif use_ramp:
             ramp_length = abs(z - prev_z) / math.tan(math.radians(ramp_config.angle_deg))
             descent_segs, rest_segs = _split_chain_at_length(segments, ramp_length)
             _emit_ramp_segments(
@@ -340,6 +408,17 @@ def _emit_contour_passes(
             )
             for seg in rest_segs:
                 _emit_segment(instructions, seg, tool_controller.feed_xy)
+        elif tabs.enabled and z < tab_top_z:
+            emit_pass_with_tabs(
+                instructions,
+                segments,
+                pass_z=z,
+                tab_top_z=tab_top_z,
+                intervals=tab_intervals,
+                ramp_length=tabs.ramp_length,
+                feed_xy=tool_controller.feed_xy,
+                feed_z=tool_controller.feed_z,
+            )
         else:
             instructions.append(
                 IRInstruction(type=MoveType.FEED, z=z, f=tool_controller.feed_z)
@@ -370,24 +449,53 @@ def _emit_contour_passes(
     lead_out_tangent: tuple[float, float] | None = None
     if use_ramp:
         cut_depth_final = z_levels[-1]
-        # Cleanup pass at Z=cut_depth over the last descent's P0→P1 slice.
-        descent_segs, _ = _split_chain_at_length(segments, per_pass_ramp_length)
-        for seg in descent_segs:
-            _emit_segment(instructions, seg, tool_controller.feed_xy)
-        # Ascent: fixed-angle from cut_depth to Z=0, starting at P1.
         ascent_length = abs(cut_depth_final) / math.tan(
             math.radians(ramp_config.angle_deg)
         )
-        ascent_segs = _walk_closed_chain(
-            segments, start_offset=per_pass_ramp_length, length=ascent_length
-        )
-        _emit_ramp_segments(
-            instructions,
-            ascent_segs,
-            z_start=cut_depth_final,
-            z_end=0.0,
-            feed_xy=tool_controller.feed_xy,
-        )
+        if tabs.enabled:
+            _emit_cleanup_with_tabs(
+                instructions,
+                tab_split_segments,
+                descent_length=per_pass_ramp_length,
+                cut_depth=cut_depth_final,
+                tab_top_z=tab_top_z,
+                tab_intervals=tab_intervals,
+                tab_ramp_length=tabs.ramp_length,
+                feed_xy=tool_controller.feed_xy,
+            )
+            ascent_segs = _walk_closed_chain(
+                tab_split_segments,
+                start_offset=per_pass_ramp_length,
+                length=ascent_length,
+            )
+            _emit_ascent_with_tabs(
+                instructions,
+                ascent_segs,
+                ascent_length=ascent_length,
+                cut_depth=cut_depth_final,
+                ascent_start_offset=per_pass_ramp_length,
+                contour_length=contour_length,
+                tab_top_z=tab_top_z,
+                tab_intervals=tab_intervals,
+                tab_ramp_length=tabs.ramp_length,
+                feed_xy=tool_controller.feed_xy,
+            )
+        else:
+            # Cleanup pass at Z=cut_depth over the last descent's P0→P1 slice.
+            descent_segs, _ = _split_chain_at_length(segments, per_pass_ramp_length)
+            for seg in descent_segs:
+                _emit_segment(instructions, seg, tool_controller.feed_xy)
+            # Ascent: fixed-angle from cut_depth to Z=0, starting at P1.
+            ascent_segs = _walk_closed_chain(
+                segments, start_offset=per_pass_ramp_length, length=ascent_length
+            )
+            _emit_ramp_segments(
+                instructions,
+                ascent_segs,
+                z_start=cut_depth_final,
+                z_end=0.0,
+                feed_xy=tool_controller.feed_xy,
+            )
         if ascent_segs:
             last_asc = ascent_segs[-1]
             lead_out_anchor = last_asc.end
@@ -471,6 +579,145 @@ def _resolve_lead_out_anchor(
     return last_ascent.end, _unit_tangent_at_end(last_ascent)
 
 
+def _emit_ramp_pass_with_tabs(
+    instructions: list[IRInstruction],
+    pre_split: list[Segment],
+    *,
+    prev_z: float,
+    pass_z: float,
+    descent_length: float,
+    tab_top_z: float,
+    tab_intervals: list[tuple[float, float]],
+    tab_ramp_length: float,
+    feed_xy: float,
+) -> None:
+    """Walk a tab-aware pre-split chain emitting one pass.
+
+    Z at arc-length s is `max(descent_z(s), tab_z(s))` — the descent
+    ramp linearly interpolates prev_z → pass_z over [0, descent_length],
+    then sits at pass_z; tabs lift to tab_top_z over their plateaus and
+    smoothly transition over the entry/exit ramps.
+    """
+    accum = 0.0
+    for piece in pre_split:
+        accum += piece.length
+        descent_z = _descent_z_at(
+            accum, prev_z=prev_z, pass_z=pass_z, descent_length=descent_length
+        )
+        tab_z = effective_z_at(
+            accum,
+            pass_z=pass_z,
+            tab_top_z=tab_top_z,
+            intervals=tab_intervals,
+            ramp_length=tab_ramp_length,
+        )
+        _emit_piece_with_z(instructions, piece, max(descent_z, tab_z), feed_xy)
+
+
+def _emit_cleanup_with_tabs(
+    instructions: list[IRInstruction],
+    pre_split: list[Segment],
+    *,
+    descent_length: float,
+    cut_depth: float,
+    tab_top_z: float,
+    tab_intervals: list[tuple[float, float]],
+    tab_ramp_length: float,
+    feed_xy: float,
+) -> None:
+    """Re-cut the descent slice at cut_depth, lifted over tabs."""
+    accum = 0.0
+    for piece in pre_split:
+        if accum + piece.length > descent_length + _LENGTH_EPSILON:
+            break
+        accum += piece.length
+        tab_z = effective_z_at(
+            accum,
+            pass_z=cut_depth,
+            tab_top_z=tab_top_z,
+            intervals=tab_intervals,
+            ramp_length=tab_ramp_length,
+        )
+        _emit_piece_with_z(instructions, piece, max(cut_depth, tab_z), feed_xy)
+
+
+def _emit_ascent_with_tabs(
+    instructions: list[IRInstruction],
+    ascent_segs: list[Segment],
+    *,
+    ascent_length: float,
+    cut_depth: float,
+    ascent_start_offset: float,
+    contour_length: float,
+    tab_top_z: float,
+    tab_intervals: list[tuple[float, float]],
+    tab_ramp_length: float,
+    feed_xy: float,
+) -> None:
+    """Walk ascent_segs lifting from cut_depth to 0 by local arc-length;
+    tab modulation uses original-contour s = (start_offset + local_s) % L.
+    """
+    if ascent_length <= 0:
+        return
+    local = 0.0
+    for piece in ascent_segs:
+        local += piece.length
+        ascent_z = cut_depth + (local / ascent_length) * (0.0 - cut_depth)
+        original_s = (ascent_start_offset + local) % contour_length
+        tab_z = effective_z_at(
+            original_s,
+            pass_z=cut_depth,
+            tab_top_z=tab_top_z,
+            intervals=tab_intervals,
+            ramp_length=tab_ramp_length,
+        )
+        _emit_piece_with_z(instructions, piece, max(ascent_z, tab_z), feed_xy)
+
+
+def _descent_z_at(
+    s: float, *, prev_z: float, pass_z: float, descent_length: float
+) -> float:
+    if descent_length <= _LENGTH_EPSILON or s >= descent_length:
+        return pass_z
+    return prev_z + (s / descent_length) * (pass_z - prev_z)
+
+
+def _emit_piece_with_z(
+    instructions: list[IRInstruction],
+    piece: Segment,
+    z: float,
+    feed_xy: float,
+) -> None:
+    """Emit a single segment forcing Z. Splits full circles."""
+    if isinstance(piece, ArcSegment) and piece.is_full_circle:
+        a, b = split_full_circle(piece)
+        _emit_piece_with_z(instructions, a, z, feed_xy)
+        _emit_piece_with_z(instructions, b, z, feed_xy)
+        return
+    if isinstance(piece, LineSegment):
+        ex, ey = piece.end
+        instructions.append(
+            IRInstruction(type=MoveType.FEED, x=ex, y=ey, z=z, f=feed_xy)
+        )
+        return
+    if isinstance(piece, ArcSegment):
+        sx, sy = piece.start
+        ex, ey = piece.end
+        cx, cy = piece.center
+        move_type = MoveType.ARC_CCW if piece.ccw else MoveType.ARC_CW
+        instructions.append(
+            IRInstruction(
+                type=move_type,
+                x=ex,
+                y=ey,
+                z=z,
+                i=cx - sx,
+                j=cy - sy,
+                f=feed_xy,
+            )
+        )
+
+
 def _emit_ramp_segments(
     instructions: list[IRInstruction],
     segs: list[Segment],
@@ -504,41 +751,6 @@ def _emit_ramp_segments(
             ))
 
 
-def _split_segment_at_length(
-    seg: Segment, length: float
-) -> tuple[Segment, Segment]:
-    """Split seg into two at arc-length `length` from start. Caller must
-    ensure 0 < length < seg.length."""
-    if isinstance(seg, LineSegment):
-        sx, sy = seg.start
-        ex, ey = seg.end
-        t = length / seg.length
-        mx = sx + t * (ex - sx)
-        my = sy + t * (ey - sy)
-        return (
-            LineSegment(start=(sx, sy), end=(mx, my)),
-            LineSegment(start=(mx, my), end=(ex, ey)),
-        )
-    # ArcSegment: arc length = |sweep| * pi/180 * radius.
-    sweep_used_deg = math.degrees(length / seg.radius) * math.copysign(
-        1, seg.sweep_deg
-    )
-    remaining_deg = seg.sweep_deg - sweep_used_deg
-    first = ArcSegment(
-        center=seg.center,
-        radius=seg.radius,
-        start_angle_deg=seg.start_angle_deg,
-        sweep_deg=sweep_used_deg,
-    )
-    second = ArcSegment(
-        center=seg.center,
-        radius=seg.radius,
-        start_angle_deg=seg.start_angle_deg + sweep_used_deg,
-        sweep_deg=remaining_deg,
-    )
-    return first, second
-
-
 def _split_chain_at_length(
     segments: list[Segment], length: float
 ) -> tuple[list[Segment], list[Segment]]:
@@ -553,7 +765,7 @@ def _split_chain_at_length(
             first.append(seg)
             remaining -= seg.length
             continue
-        seg_a, seg_b = _split_segment_at_length(seg, remaining)
+        seg_a, seg_b = split_segment_at_length(seg, remaining)
         first.append(seg_a)
         return (first, [seg_b, *segments[i + 1:]])
     return (first, [])
@@ -774,6 +986,11 @@ def _unit_tangent_at_end(seg: Segment) -> tuple[float, float]:
 
 
 def _emit_segment(instructions: list[IRInstruction], seg: Segment, feed_xy: float) -> None:
+    if isinstance(seg, ArcSegment) and seg.is_full_circle:
+        first, second = split_full_circle(seg)
+        _emit_segment(instructions, first, feed_xy)
+        _emit_segment(instructions, second, feed_xy)
+        return
     if isinstance(seg, LineSegment):
         ex, ey = seg.end
         instructions.append(IRInstruction(type=MoveType.FEED, x=ex, y=ey, f=feed_xy))

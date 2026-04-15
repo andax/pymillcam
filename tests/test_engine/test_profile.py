@@ -15,6 +15,7 @@ from pymillcam.core.operations import (
     ProfileOp,
     RampConfig,
     RampStrategy,
+    TabConfig,
 )
 from pymillcam.core.project import Project
 from pymillcam.core.segments import ArcSegment, LineSegment
@@ -330,13 +331,14 @@ def test_on_line_offset_never_discretizes_arc_to_many_chords() -> None:
     assert len(arc_moves) == 2  # 2 passes × 1 arc per pass
 
 
-def test_full_circle_arc_emits_one_arc_move_per_pass() -> None:
-    """A full circle with PLUNGE ramp should be one G2/G3 per pass, not 72
-    chord segments."""
+def test_full_circle_arc_emits_two_semicircles_per_pass() -> None:
+    """A full circle with PLUNGE ramp emits two G2/G3 per pass (split into
+    semicircles for portable G-code), not 72 chord segments. See
+    `split_full_circle` for the rationale."""
     project, op = _project_with_arc_segment(sweep_deg=360.0)
     tp = generate_profile_toolpath(op, project)
     arc_moves = [i for i in tp.instructions if i.type is MoveType.ARC_CCW]
-    assert len(arc_moves) == 2  # 2 passes, each a single full-circle arc
+    assert len(arc_moves) == 4  # 2 passes × 2 semicircles each
 
 
 def test_outside_offset_on_full_circle_keeps_every_vertex_outside() -> None:
@@ -731,3 +733,331 @@ def test_arc_lead_in_on_full_circle_plunges_at_exact_offset() -> None:
     ]
     assert math.isclose(xy_rapids[0].x, 8.0, abs_tol=1e-9)
     assert math.isclose(xy_rapids[0].y, -2.0, abs_tol=1e-9)
+
+
+# ---------- tabs ----------------------------------------------------------
+
+def _project_with_rect_tabs(
+    *,
+    cut_depth: float = -6.0,
+    stepdown: float = 2.0,
+    multi_depth: bool = True,
+    tabs: TabConfig | None = None,
+    closed: bool = True,
+) -> tuple[Project, ProfileOp]:
+    project, op, _ = _project_with_rectangle(
+        cut_depth=cut_depth,
+        stepdown=stepdown,
+        multi_depth=multi_depth,
+        closed=closed,
+    )
+    if tabs is not None:
+        op.tabs = tabs
+    return project, op
+
+
+def test_tabs_disabled_default_leaves_output_unchanged() -> None:
+    project, op = _project_with_rect_tabs()
+    tp_before = generate_profile_toolpath(op, project)
+    op.tabs = TabConfig(enabled=False)
+    tp_after = generate_profile_toolpath(op, project)
+    # Same instruction stream when tabs are disabled.
+    assert [i.type for i in tp_before.instructions] == [
+        i.type for i in tp_after.instructions
+    ]
+
+
+def test_tabs_modulate_only_breaching_passes() -> None:
+    """With stepdown 2 and tab_height 0.5: tab_top_z = -5.5. Passes at -2,
+    -4 are above tab_top (no modulation). Pass at -6 breaches → modulates.
+    """
+    project, op = _project_with_rect_tabs(
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    tp = generate_profile_toolpath(op, project)
+    # Collect the z-bearing feed moves grouped by pass — count distinct z
+    # values that appear in the body of each pass.
+    feeds_with_z = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    z_values = {round(f.z, 4) for f in feeds_with_z}
+    # Pass plunges to -2, -4 land in z_values; the -6 pass plunges to -6
+    # and the tab plateau lifts to -5.5 → -5.5 must be present.
+    assert -2.0 in z_values
+    assert -4.0 in z_values
+    assert -6.0 in z_values
+    assert -5.5 in z_values
+
+
+def test_tabs_with_stepdown_smaller_than_height_modulates_multiple_passes() -> None:
+    """stepdown 0.5, tab_height 1.0 → tab_top = -2.0. Passes at -0.5, -1.5
+    are above; pass at -2.0 is at tab_top (boundary, not strictly less);
+    -2.5 and -3.0 breach. Multiple passes should hit the tab plateau.
+    """
+    project, op = _project_with_rect_tabs(
+        cut_depth=-3.0,
+        stepdown=0.5,
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=1.0, ramp_length=1.0,
+        ),
+    )
+    tp = generate_profile_toolpath(op, project)
+    # Find feeds at the tab top z = -2.0 — count how many distinct passes
+    # mention it. Each modulating pass plunges to its pass_z then lifts to
+    # tab_top_z over the tab plateaus.
+    plateau_lifts = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED
+        and i.z is not None
+        and math.isclose(i.z, -2.0, abs_tol=1e-6)
+        and i.x is not None  # plateau lift is a plateau-bound feed, not a plunge
+    ]
+    # 2 breaching passes (-2.5, -3.0), 4 tabs each, plateau bookends per
+    # tab = 2 (entry-top + plateau-end) → 2*4*2 = 16 z=-2.0 plateau feeds.
+    assert len(plateau_lifts) == 16
+
+
+def test_tabs_with_ramp_uses_on_contour_descent() -> None:
+    """With ramp + tabs, each pass descends along the contour rather than
+    plunging vertically. No pure-plunge FEED (z-only, no XY) for the
+    intermediate passes — descent z is interpolated across XY moves.
+    Tabs still lift the tool to tab_top over each plateau."""
+    project, op = _project_with_rect_tabs(
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    op.ramp = RampConfig(strategy=RampStrategy.LINEAR, angle_deg=3.0)
+    tp = generate_profile_toolpath(op, project)
+    feeds = [i for i in tp.instructions if i.type is MoveType.FEED]
+    pure_plunges = [
+        f for f in feeds if f.z is not None and f.x is None and f.y is None
+    ]
+    # The only z-only FEED is the surface-level descent before the lead-in
+    # (z=0). No vertical plunges to pass depths.
+    plunge_zs = [round(p.z, 4) for p in pure_plunges]
+    assert plunge_zs == [0.0]
+    # Tab plateaus are still hit on breaching passes.
+    plateau_lifts = [
+        f for f in feeds
+        if f.z is not None and math.isclose(f.z, -5.5, abs_tol=1e-6)
+    ]
+    assert plateau_lifts, "expected tab plateau lifts at z=-5.5"
+
+
+def test_tabs_raise_when_height_exceeds_cut_depth() -> None:
+    project, op = _project_with_rect_tabs(
+        cut_depth=-1.0,
+        tabs=TabConfig(enabled=True, height=2.0, ramp_length=1.0),
+    )
+    with pytest.raises(ProfileGenerationError, match="cut depth"):
+        generate_profile_toolpath(op, project)
+
+
+def test_tabs_raise_when_contour_too_short_for_count() -> None:
+    project, op = _project_with_rect_tabs(
+        tabs=TabConfig(
+            enabled=True, count=20, width=10.0, height=0.5, ramp_length=2.0,
+        ),
+    )
+    with pytest.raises(ProfileGenerationError):
+        generate_profile_toolpath(op, project)
+
+
+def test_tabs_raise_on_open_contour() -> None:
+    project, op = _project_with_rect_tabs(
+        closed=False,
+        tabs=TabConfig(enabled=True, height=0.5, ramp_length=1.0),
+    )
+    op.offset_side = OffsetSide.ON_LINE
+    with pytest.raises(ProfileGenerationError, match="closed contour"):
+        generate_profile_toolpath(op, project)
+
+
+def test_full_circle_contour_emits_two_semicircles_per_pass() -> None:
+    """A full-circle arc traced as a single G2/G3 with start XY == end XY
+    is ambiguous — many viewers and controllers reject or skip it. The
+    engine must split full circles into two halves before emitting IR."""
+    circle = ArcSegment(center=(0, 0), radius=10, start_angle_deg=0, sweep_deg=360)
+    entity = GeometryEntity(segments=[circle], closed=True)
+    layer = GeometryLayer(name="L", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 1.0, "flute_length": 15,
+                                        "total_length": 50, "shank_diameter": 3,
+                                        "flute_count": 2})
+    tc = ToolController(tool_number=1, tool=tool, feed_xy=1200, feed_z=300,
+                        spindle_rpm=18000)
+    op = ProfileOp(
+        name="Circ",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name=layer.name, entity_id=entity.id)],
+        cut_depth=-1.0,
+        stepdown=1.0,
+        offset_side=OffsetSide.ON_LINE,
+        lead_in=LeadConfig(style=LeadStyle.DIRECT),
+        lead_out=LeadConfig(style=LeadStyle.DIRECT),
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
+    tp = generate_profile_toolpath(op, project)
+
+    arcs = [
+        i for i in tp.instructions
+        if i.type in (MoveType.ARC_CW, MoveType.ARC_CCW)
+    ]
+    # One pass × two halves.
+    assert len(arcs) == 2
+    # Endpoints of the two halves are distinct from each other and from the start.
+    start_xy = (10.0, 0.0)
+    half1_end = (round(arcs[0].x, 6), round(arcs[0].y, 6))
+    half2_end = (round(arcs[1].x, 6), round(arcs[1].y, 6))
+    assert half1_end != start_xy
+    assert half2_end == pytest.approx(start_xy)
+
+
+def test_ramp_with_tabs_lifts_descent_over_tab_plateau() -> None:
+    """When a tab plateau falls inside the descent slice, effective_z
+    must be max(descent_z, tab_top_z). The tool can't be allowed to slope
+    through the tab on the way down."""
+    project, op = _project_with_rect_tabs(
+        cut_depth=-3.0,
+        stepdown=1.0,
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    op.offset_side = OffsetSide.ON_LINE
+    op.ramp = RampConfig(strategy=RampStrategy.LINEAR, angle_deg=3.0)
+    tp = generate_profile_toolpath(op, project)
+    # Final pass tab_top_z = -3 + 0.5 = -2.5.
+    plateau_z = -2.5
+    plateau_feeds = [
+        i for i in tp.instructions
+        if i.type in (MoveType.FEED, MoveType.ARC_CCW, MoveType.ARC_CW)
+        and i.z is not None
+        and math.isclose(i.z, plateau_z, abs_tol=1e-6)
+    ]
+    # Final pass: 4 tabs × 2 plateau bookends = 8.
+    # Cleanup pass at cut_depth re-cuts descent slice [0, ~19.08mm],
+    # which crosses tab 0's entry-ramp end (s=18) → 1 extra hit.
+    # Ascent crosses tab 0's plateau end (s=22) at z=-2.85 → 1 extra
+    # hit (lifted to tab_top). Total: 10.
+    assert len(plateau_feeds) == 10
+
+
+def test_ramp_with_tabs_no_z_below_tab_top_inside_plateau() -> None:
+    """Stronger guarantee: at any tab plateau s, no emitted feed lands
+    at a z below tab_top_z (modulo epsilon). Catches accidentally
+    cutting through tabs on descent or cleanup."""
+    project, op = _project_with_rect_tabs(
+        cut_depth=-3.0,
+        stepdown=1.0,
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    op.offset_side = OffsetSide.ON_LINE
+    op.ramp = RampConfig(strategy=RampStrategy.LINEAR, angle_deg=3.0)
+    tp = generate_profile_toolpath(op, project)
+
+    # Map XY → arc-length on the rect perimeter so we can check each
+    # emitted feed against the (computed) plateau intervals.
+    rect_segs = [
+        LineSegment(start=(0, 0), end=(50, 0)),
+        LineSegment(start=(50, 0), end=(50, 30)),
+        LineSegment(start=(50, 30), end=(0, 30)),
+        LineSegment(start=(0, 30), end=(0, 0)),
+    ]
+    tab_top_z = -2.5
+    plateau_intervals = [
+        (18.0, 22.0), (58.0, 62.0), (98.0, 102.0), (138.0, 142.0),
+    ]
+
+    def s_at_xy(x: float, y: float) -> float | None:
+        accum = 0.0
+        for seg in rect_segs:
+            sx, sy = seg.start
+            ex, ey = seg.end
+            dx, dy = ex - sx, ey - sy
+            length = math.hypot(dx, dy)
+            if length == 0:
+                continue
+            # Project (x,y)-start onto seg, see if it falls inside.
+            t_num = (x - sx) * dx + (y - sy) * dy
+            t = t_num / (length * length)
+            if -1e-6 <= t <= 1 + 1e-6:
+                proj_x = sx + max(0.0, min(1.0, t)) * dx
+                proj_y = sy + max(0.0, min(1.0, t)) * dy
+                if math.hypot(x - proj_x, y - proj_y) < 1e-3:
+                    return accum + max(0.0, min(1.0, t)) * length
+            accum += length
+        return None
+
+    feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.x is not None and i.z is not None
+    ]
+    for feed in feeds:
+        s = s_at_xy(feed.x, feed.y)
+        if s is None:
+            continue
+        for s_lo, s_hi in plateau_intervals:
+            if s_lo - 1e-6 <= s <= s_hi + 1e-6:
+                assert feed.z >= tab_top_z - 1e-6, (
+                    f"Feed at s={s:.3f} (xy={feed.x:.3f},{feed.y:.3f}) cuts "
+                    f"to z={feed.z:.3f}, below tab_top_z={tab_top_z}"
+                )
+
+
+def test_ramp_with_tabs_ascent_lifts_over_tabs() -> None:
+    """The post-last-pass ascent must also respect tabs — it walks the
+    contour while rising, and may cross tab plateaus where it's still
+    below tab_top_z. The lift must be present in the emitted IR."""
+    # Use a small angle to make the ascent long enough to wrap past the
+    # first tab while still below tab_top_z.
+    project, op = _project_with_rect_tabs(
+        cut_depth=-3.0,
+        stepdown=1.0,
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    op.offset_side = OffsetSide.ON_LINE
+    op.ramp = RampConfig(strategy=RampStrategy.LINEAR, angle_deg=3.0)
+    tp = generate_profile_toolpath(op, project)
+    # We expect the plateau z (-2.5) to appear at least one more time
+    # beyond the 8 hits attributable to the final pass — the ascent
+    # crosses tab plateaus too.
+    plateau_z = -2.5
+    plateau_feeds = [
+        i for i in tp.instructions
+        if i.z is not None and math.isclose(i.z, plateau_z, abs_tol=1e-6)
+    ]
+    # Final pass: 8. Cleanup pass: covers descent slice [0, ~19mm], no
+    # tab plateaus there (first plateau at s=21). Ascent: 57mm starting
+    # at s=19 → crosses s=21..23 (first tab plateau). So at least one
+    # extra plateau hit from ascent. Total >= 8 + 2.
+    assert len(plateau_feeds) >= 10
+
+
+def test_tabs_count_plateau_bookends_on_final_pass() -> None:
+    """Sanity-check tab count via plateau-entry-top z values on the final
+    pass: 4 tabs × (entry-top + plateau-end) = 8 z=tab_top feeds.
+    (Other passes don't breach with stepdown 2 + tab_height 0.5.)"""
+    project, op = _project_with_rect_tabs(
+        tabs=TabConfig(
+            enabled=True, count=4, width=4.0, height=0.5, ramp_length=1.0,
+        ),
+    )
+    op.offset_side = OffsetSide.ON_LINE
+    tp = generate_profile_toolpath(op, project)
+    plateau_lifts = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED
+        and i.z is not None
+        and math.isclose(i.z, -5.5, abs_tol=1e-6)
+        and i.x is not None
+    ]
+    assert len(plateau_lifts) == 8

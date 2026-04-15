@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -30,6 +31,7 @@ from pymillcam.core.operations import (
     ProfileOp,
     RampConfig,
     RampStrategy,
+    TabConfig,
 )
 from pymillcam.core.tools import ToolController
 
@@ -80,6 +82,11 @@ class PropertiesPanel(QWidget):
         f.lead_out_length.valueChanged.connect(self._on_profile_changed)
         f.ramp_strategy.currentTextChanged.connect(self._on_profile_changed)
         f.ramp_angle.valueChanged.connect(self._on_profile_changed)
+        f.tabs_enabled.toggled.connect(self._on_profile_changed)
+        f.tabs_count.valueChanged.connect(self._on_profile_changed)
+        f.tabs_height.valueChanged.connect(self._on_profile_changed)
+        f.tabs_width.valueChanged.connect(self._on_profile_changed)
+        f.tabs_ramp_length.valueChanged.connect(self._on_profile_changed)
 
     def _wire_pocket_signals(self) -> None:
         f = self._pocket_form
@@ -145,6 +152,13 @@ class PropertiesPanel(QWidget):
         self._populate_lead(op.lead_out, f.lead_out_style, f.lead_out_length)
         f.ramp_strategy.setCurrentText(op.ramp.strategy.value)
         f.ramp_angle.setValue(op.ramp.angle_deg)
+        f.tabs_enabled.setChecked(op.tabs.enabled)
+        f.tabs_count.setValue(op.tabs.count)
+        f.tabs_height.setValue(op.tabs.height)
+        f.tabs_width.setValue(op.tabs.width)
+        f.tabs_ramp_length.setValue(op.tabs.ramp_length)
+        for w in (f.tabs_count, f.tabs_height, f.tabs_width, f.tabs_ramp_length):
+            w.setEnabled(op.tabs.enabled)
 
     def _populate_pocket(
         self, op: PocketOp, tool_controller: ToolController | None
@@ -211,6 +225,17 @@ class PropertiesPanel(QWidget):
             angle_deg=f.ramp_angle.value(),
             radius=op.ramp.radius,
         )
+        op.tabs = TabConfig(
+            enabled=f.tabs_enabled.isChecked(),
+            style=op.tabs.style,
+            count=f.tabs_count.value(),
+            width=f.tabs_width.value(),
+            height=f.tabs_height.value(),
+            ramp_length=f.tabs_ramp_length.value(),
+            auto_place=op.tabs.auto_place,
+        )
+        for w in (f.tabs_count, f.tabs_height, f.tabs_width, f.tabs_ramp_length):
+            w.setEnabled(op.tabs.enabled)
         self.operation_changed.emit()
 
     def _on_pocket_changed(self) -> None:
@@ -281,6 +306,25 @@ class _ProfileForm(QWidget):
         self.ramp_angle.setDecimals(2)
         self.ramp_angle.setSingleStep(0.5)
         self.ramp_angle.setSuffix(" °")
+        self.tabs_enabled = QCheckBox("Enable tabs")
+        self.tabs_count = QSpinBox()
+        self.tabs_count.setRange(1, 50)
+        self.tabs_count.setSingleStep(1)
+        self.tabs_height = QDoubleSpinBox()
+        self.tabs_height.setRange(0.05, 50.0)
+        self.tabs_height.setDecimals(3)
+        self.tabs_height.setSingleStep(0.1)
+        self.tabs_height.setSuffix(" mm")
+        self.tabs_width = QDoubleSpinBox()
+        self.tabs_width.setRange(0.1, 100.0)
+        self.tabs_width.setDecimals(3)
+        self.tabs_width.setSingleStep(0.5)
+        self.tabs_width.setSuffix(" mm")
+        self.tabs_ramp_length = QDoubleSpinBox()
+        self.tabs_ramp_length.setRange(0.0, 100.0)
+        self.tabs_ramp_length.setDecimals(3)
+        self.tabs_ramp_length.setSingleStep(0.5)
+        self.tabs_ramp_length.setSuffix(" mm")
 
         form = QFormLayout(self)
         form.addRow("Name", self.name)
@@ -298,6 +342,11 @@ class _ProfileForm(QWidget):
         form.addRow("Lead-out length", self.lead_out_length)
         form.addRow("Ramp strategy", self.ramp_strategy)
         form.addRow("Ramp angle", self.ramp_angle)
+        form.addRow("", self.tabs_enabled)
+        form.addRow("Tab count", self.tabs_count)
+        form.addRow("Tab height", self.tabs_height)
+        form.addRow("Tab width", self.tabs_width)
+        form.addRow("Tab ramp length", self.tabs_ramp_length)
 
 
 class _PocketForm(QWidget):

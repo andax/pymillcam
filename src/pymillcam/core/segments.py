@@ -124,6 +124,66 @@ def segments_to_shapely(
     return LineString(points)
 
 
+def split_full_circle(arc: ArcSegment) -> tuple[ArcSegment, ArcSegment]:
+    """Split a 360° arc into two semicircles around the same center.
+
+    A G2/G3 with start XY == end XY is ambiguous in standard G-code: most
+    viewers and many controllers either reject it or render nothing. Two
+    half-arcs with distinct endpoints are portable.
+    """
+    if not arc.is_full_circle:
+        raise ValueError("split_full_circle requires a full-circle arc")
+    half = arc.sweep_deg / 2.0
+    return (
+        ArcSegment(
+            center=arc.center,
+            radius=arc.radius,
+            start_angle_deg=arc.start_angle_deg,
+            sweep_deg=half,
+        ),
+        ArcSegment(
+            center=arc.center,
+            radius=arc.radius,
+            start_angle_deg=arc.start_angle_deg + half,
+            sweep_deg=half,
+        ),
+    )
+
+
+def split_segment_at_length(
+    seg: LineSegment | ArcSegment, length: float
+) -> tuple[LineSegment | ArcSegment, LineSegment | ArcSegment]:
+    """Split `seg` at arc-length `length` from its start. Caller must
+    ensure 0 < length < seg.length."""
+    if isinstance(seg, LineSegment):
+        sx, sy = seg.start
+        ex, ey = seg.end
+        t = length / seg.length
+        mx = sx + t * (ex - sx)
+        my = sy + t * (ey - sy)
+        return (
+            LineSegment(start=(sx, sy), end=(mx, my)),
+            LineSegment(start=(mx, my), end=(ex, ey)),
+        )
+    sweep_used_deg = math.degrees(length / seg.radius) * math.copysign(
+        1, seg.sweep_deg
+    )
+    remaining_deg = seg.sweep_deg - sweep_used_deg
+    first = ArcSegment(
+        center=seg.center,
+        radius=seg.radius,
+        start_angle_deg=seg.start_angle_deg,
+        sweep_deg=sweep_used_deg,
+    )
+    second = ArcSegment(
+        center=seg.center,
+        radius=seg.radius,
+        start_angle_deg=seg.start_angle_deg + sweep_used_deg,
+        sweep_deg=remaining_deg,
+    )
+    return first, second
+
+
 def reverse_segment(seg: LineSegment | ArcSegment) -> LineSegment | ArcSegment:
     """Walk the segment in the opposite direction.
 

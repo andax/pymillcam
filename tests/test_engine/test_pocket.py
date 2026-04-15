@@ -495,14 +495,15 @@ def test_helical_ramp_emits_transit_to_ring_one() -> None:
         geometry_layers=[layer], tool_controllers=[tc], operations=[op]
     )
     tp = generate_pocket_toolpath(op, project)
-    # Outer ring (radius 23.5) is emitted as a full-circle ARC_CW. Right
-    # after that arc we must see a straight FEED to (21.5, 0) (ring 1's
-    # start), THEN the ring-1 arc.
+    # Outer ring (radius 23.5) is emitted as two semicircles (full-circle
+    # arcs are split for portable G-code). The second half ends at
+    # (23.5, 0) with center offset I=+23.5 from the (-23.5, 0) midpoint.
+    # Right after that arc we must see a straight FEED to (21.5, 0).
     outer_ring_idx = next(
         i for i, ins in enumerate(tp.instructions)
         if ins.type is MoveType.ARC_CW
         and ins.x == pytest.approx(23.5, abs=1e-6)
-        and ins.i == pytest.approx(-23.5, abs=1e-6)
+        and ins.i == pytest.approx(23.5, abs=1e-6)
         and ins.z is None
     )
     transit = tp.instructions[outer_ring_idx + 1]

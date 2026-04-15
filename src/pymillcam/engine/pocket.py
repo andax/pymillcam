@@ -52,6 +52,8 @@ from pymillcam.core.segments import (
     Segment,
     reverse_segment_chain,
     segments_to_shapely,
+    split_full_circle,
+    split_segment_at_length,
 )
 from pymillcam.core.tools import ToolController
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
@@ -813,40 +815,6 @@ def _unit_tangent_at_start(seg: Segment) -> tuple[float, float]:
     return (math.sin(theta), -math.cos(theta))
 
 
-def _split_segment_at_length(
-    seg: Segment, length: float
-) -> tuple[Segment, Segment]:
-    """Split `seg` in two at arc-length `length` from start. Caller must
-    ensure 0 < length < seg.length."""
-    if isinstance(seg, LineSegment):
-        sx, sy = seg.start
-        ex, ey = seg.end
-        t = length / seg.length
-        mx = sx + t * (ex - sx)
-        my = sy + t * (ey - sy)
-        return (
-            LineSegment(start=(sx, sy), end=(mx, my)),
-            LineSegment(start=(mx, my), end=(ex, ey)),
-        )
-    sweep_used_deg = math.degrees(length / seg.radius) * math.copysign(
-        1, seg.sweep_deg
-    )
-    remaining_deg = seg.sweep_deg - sweep_used_deg
-    first = ArcSegment(
-        center=seg.center,
-        radius=seg.radius,
-        start_angle_deg=seg.start_angle_deg,
-        sweep_deg=sweep_used_deg,
-    )
-    second = ArcSegment(
-        center=seg.center,
-        radius=seg.radius,
-        start_angle_deg=seg.start_angle_deg + sweep_used_deg,
-        sweep_deg=remaining_deg,
-    )
-    return first, second
-
-
 def _split_chain_at_length(
     segments: list[Segment], length: float
 ) -> tuple[list[Segment], list[Segment]]:
@@ -860,7 +828,7 @@ def _split_chain_at_length(
             first.append(seg)
             remaining -= seg.length
             continue
-        seg_a, seg_b = _split_segment_at_length(seg, remaining)
+        seg_a, seg_b = split_segment_at_length(seg, remaining)
         first.append(seg_a)
         return (first, [seg_b, *segments[i + 1:]])
     return (first, [])
@@ -902,6 +870,11 @@ def _emit_ramp_segments(
 def _emit_segment(
     instructions: list[IRInstruction], seg: Segment, feed_xy: float
 ) -> None:
+    if isinstance(seg, ArcSegment) and seg.is_full_circle:
+        first, second = split_full_circle(seg)
+        _emit_segment(instructions, first, feed_xy)
+        _emit_segment(instructions, second, feed_xy)
+        return
     if isinstance(seg, LineSegment):
         ex, ey = seg.end
         instructions.append(

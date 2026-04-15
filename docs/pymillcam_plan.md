@@ -754,15 +754,15 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 
 **Goal:** A minimal tool that can import a DXF, assign a profile operation to a contour, and generate G-code.
 
-- Core data models with Pydantic (Project, Stock, Operation, Tool, Machine)
-- DXF import via ezdxf (lines, arcs, polylines, circles)
-- Basic profile toolpath generation (outside/inside offset, multi-depth)
-- IR definition and one post-processor (UCCNC)
-- Minimal PySide6 window: viewport + simple tree + output panel
-- Directional box selection (left-to-right contained, right-to-left crossing)
-- Undo/redo command infrastructure (command pattern, stack, Ctrl+Z/Ctrl+Shift+Z)
-- Coordinate readout in status bar
-- Project save/load as JSON
+- ✅ Core data models with Pydantic (Project, Stock, Operation, Tool, Machine)
+- ✅ DXF import via ezdxf (lines, arcs, polylines, circles)
+- ✅ Basic profile toolpath generation (outside/inside offset, multi-depth)
+- ✅ IR definition and one post-processor (UCCNC)
+- ✅ Minimal PySide6 window: viewport + simple tree + output panel
+- ✅ Directional box selection (left-to-right contained, right-to-left crossing)
+- ✅ Undo/redo command infrastructure (command pattern, stack, Ctrl+Z/Ctrl+Shift+Z)
+- ✅ Coordinate readout in status bar
+- ✅ Project save/load as JSON
 
 ### Phase 2: Core Operations (2–2.5 weeks)
 
@@ -772,7 +772,13 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 - ✅ On-contour ramp entry for profiles (descent + cleanup + ascent)
 - ✅ Pocket OFFSET strategy (concentric inward rings, arc-preserving),
   multi-depth, ramp entry (LINEAR default + HELICAL with fallback chain)
-- Pocket ZIGZAG / SPIRAL strategies
+- ✅ Pocket ZIGZAG strategy (parallel raster strokes with `angle_deg`
+  rotation, arc-preserving finishing contour, multi-depth, LINEAR ramp
+  with back-and-forth on short first strokes + cleanup leg, HELICAL
+  fallback to LINEAR, finishing ring rotated to start near last stroke)
+- ✅ Spindle lifecycle: post-processor owns program-end M5; engine emits
+  configurable warmup dwell (`ProjectSettings.spindle_warmup_s`) after M3
+- Pocket SPIRAL strategy
 - Pocket island / hole detection
 - Drill operation (simple and peck cycles)
 - Tab generation for profile operations
