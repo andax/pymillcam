@@ -117,6 +117,14 @@ Pocket islands known limitations:
     last pass" at half-stepover past the last successful distance to
     close the residual; skipped if the resulting polygon area is
     < `stepover²` (avoids microscopic Shapely artefacts).
+  - V-notch corners (where an island grows close enough to the
+    boundary that the buffer notches the polygon's exterior) leave a
+    residual the inward-offset cannot reach — no buffer iteration
+    produces a polygon at the corner tip. Needs proper rest-machining
+    (medial-axis cleanup of the residual area) which isn't implemented
+    yet. Practically: ~0.05 mm² uncut per V-notch for the motor-section
+    geometry; visible in the viewport but smaller than typical kerf
+    width / tool deflection.
 
 `ProjectSettings.chord_tolerance` defaults to 0.02 mm (was 0.05 in early
 Phase 1). Per-op override via the Properties panel.

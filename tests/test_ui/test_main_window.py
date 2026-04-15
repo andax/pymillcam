@@ -610,3 +610,151 @@ def test_profile_and_pocket_ops_coexist_in_generation(
     text = main_window._output.toPlainText()
     assert "Profile" in text
     assert "Pocket" in text
+
+
+# ---------- Add/Remove from active op ------------------------------------
+
+def _project_with_two_circles() -> tuple[Project, GeometryEntity, GeometryEntity]:
+    a = GeometryEntity(
+        segments=[ArcSegment(center=(0, 0), radius=25, start_angle_deg=0, sweep_deg=360)],
+        closed=True,
+    )
+    b = GeometryEntity(
+        segments=[ArcSegment(center=(60, 0), radius=10, start_angle_deg=0, sweep_deg=360)],
+        closed=True,
+    )
+    layer = GeometryLayer(name="L", entities=[a, b])
+    return Project(name="two", geometry_layers=[layer]), a, b
+
+
+def test_add_remove_op_actions_disabled_without_active_op(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    # Selection present but no active op selected in the tree.
+    assert not main_window._action_add_to_op.isEnabled()
+    assert not main_window._action_remove_from_op.isEnabled()
+
+
+def test_add_remove_op_actions_disabled_without_selection(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    # Active op selected, but viewport selection now empty (Add Profile
+    # cleared it via the tree-selection sync).
+    assert not main_window._viewport.selection
+    assert not main_window._action_add_to_op.isEnabled()
+    assert not main_window._action_remove_from_op.isEnabled()
+
+
+def test_active_op_geometry_highlighted_in_viewport(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    assert main_window._viewport._active_op_refs == {("L", a.id)}
+
+
+def test_add_to_active_op_appends_new_refs(
+    main_window: MainWindow,
+) -> None:
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Select the OTHER entity, then Add to active op.
+    _simulate_viewport_click(main_window, "L", b.id)
+    main_window._action_add_to_op.trigger()
+
+    op_after = main_window._find_operation(op.id)
+    assert op_after is not None
+    refs = {(r.layer_name, r.entity_id) for r in op_after.geometry_refs}
+    assert refs == {("L", a.id), ("L", b.id)}
+
+
+def test_add_to_active_op_skips_already_present_refs(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Re-select the entity already in op and Add — must not duplicate.
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_to_op.trigger()
+
+    op_after = main_window._find_operation(op.id)
+    assert op_after is not None
+    assert len(op_after.geometry_refs) == 1
+
+
+def test_remove_from_active_op_drops_matching_refs(
+    main_window: MainWindow,
+) -> None:
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    # Multi-select both via two clicks (use viewport.set_selection direct
+    # to avoid replaying the modifier-aware click logic).
+    main_window._viewport.set_selection([("L", a.id), ("L", b.id)])
+    main_window._viewport.selection_changed.emit([("L", a.id), ("L", b.id)])
+    main_window._action_add_profile.trigger()
+    # Two profile ops were created (one per entity since they're disjoint).
+    # We want one op with both refs — make it directly.
+    main_window.project.operations.clear()
+    main_window.project.operations.append(
+        ProfileOp(
+            name="Multi",
+            tool_controller_id=main_window.project.tool_controllers[0].tool_number,
+            geometry_refs=[
+                GeometryRef(layer_name="L", entity_id=a.id),
+                GeometryRef(layer_name="L", entity_id=b.id),
+            ],
+        )
+    )
+    main_window._replace_project(main_window.project, fit=False)
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Select just `b` and remove.
+    _simulate_viewport_click(main_window, "L", b.id)
+    main_window._action_remove_from_op.trigger()
+
+    op_after = main_window._find_operation(op.id)
+    assert op_after is not None
+    refs = {(r.layer_name, r.entity_id) for r in op_after.geometry_refs}
+    assert refs == {("L", a.id)}
+
+
+def test_add_to_active_op_is_undoable(
+    main_window: MainWindow,
+) -> None:
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    _simulate_viewport_click(main_window, "L", b.id)
+    main_window._action_add_to_op.trigger()
+    assert len(main_window._find_operation(op.id).geometry_refs) == 2
+
+    main_window._action_undo.trigger()
+    assert len(main_window._find_operation(op.id).geometry_refs) == 1

@@ -784,6 +784,9 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   with retract between disjoint pieces; ZIGZAG with per-wall finishing
   rings; multiple disjoint boundaries per op share settings)
 - Pocket SPIRAL strategy
+- Pocket rest-machining for V-notch corners (where an island grows
+  close to the boundary, the inward-offset can't reach the corner tip;
+  needs medial-axis cleanup of the residual area)
 - Drill operation (simple and peck cycles)
 - Edit op geometry refs after creation (currently refs are set at
   Add-Op time and not editable; viewport should highlight an op's

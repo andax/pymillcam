@@ -428,14 +428,20 @@ def _concentric_rings_with_islands(
             # the opposing wall's last ring (when stepover doesn't
             # divide the wall thickness evenly). Try one ring at
             # half-stepover past the last successful distance to close
-            # the residual. Skip if the resulting polygon is too small
-            # to be a meaningful cut (avoids emitting microscopic
+            # the residual annulus. Skip if the resulting polygon is too
+            # small to be a meaningful cut (avoids emitting microscopic
             # multi-polygon artefacts from Shapely's near-empty results).
+            #
+            # NOTE: this only helps with annulus-shaped residuals (uniform
+            # wall thickness). It does NOT clean up V-notch corners where
+            # an island reaches close to the boundary — those need
+            # rest-machining (medial axis or residual-area cleanup),
+            # which isn't implemented yet. Documented in CLAUDE.md.
             half_d = distance - stepover / 2.0
             half_polys = _extract_polygons(
                 machinable.buffer(-half_d, join_style="mitre")
             )
-            min_area = stepover * stepover  # ~one stepover-square
+            min_area = stepover * stepover
             for poly in half_polys:
                 if poly.area < min_area:
                     continue

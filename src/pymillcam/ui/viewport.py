@@ -57,6 +57,7 @@ COLOR_AXIS_Y = QColor(80, 160, 80)
 COLOR_GEOMETRY = QColor(230, 230, 230)
 COLOR_POINT = QColor(240, 200, 80)
 COLOR_SELECTED = QColor(90, 180, 255)
+COLOR_ACTIVE_OP_MEMBER = QColor(110, 220, 130)
 COLOR_PROFILE_PREVIEW = QColor(255, 160, 60)
 COLOR_TOOLPATH_FEED = QColor(220, 90, 200)
 COLOR_TOOLPATH_RAPID = QColor(80, 200, 220)
@@ -95,6 +96,11 @@ class Viewport(QWidget):
         self._pan_start_widget: QPoint = QPoint()
         self._pan_start_origin: QPointF = QPointF()
         self._selection: list[tuple[str, str]] = []
+        # Entities belonging to the currently-active operation (selected
+        # in the operations tree). Drawn in COLOR_ACTIVE_OP_MEMBER so the
+        # user sees which geometry the op references; selection still
+        # paints on top in COLOR_SELECTED.
+        self._active_op_refs: set[tuple[str, str]] = set()
         # Drag-to-box-select state (left button only; differentiated from a
         # click by `DRAG_THRESHOLD_PX` of movement).
         self._left_press_widget: QPointF | None = None
@@ -111,17 +117,30 @@ class Viewport(QWidget):
 
     def set_layers(self, layers: list[GeometryLayer]) -> None:
         self._layers = list(layers)
-        # Drop any selected entity that's no longer in the project.
+        # Drop any selected entity (or active-op ref) that's no longer
+        # in the project.
         self._selection = [
             (layer, entity_id)
             for layer, entity_id in self._selection
             if self._has_entity(layer, entity_id)
         ]
+        self._active_op_refs = {
+            (layer, entity_id)
+            for layer, entity_id in self._active_op_refs
+            if self._has_entity(layer, entity_id)
+        }
         self.update()
 
     def set_selection(self, items: list[tuple[str, str]]) -> None:
         """Programmatic selection change. Does NOT emit `selection_changed`."""
         self._selection = list(items)
+        self.update()
+
+    def set_active_op_refs(self, items: list[tuple[str, str]]) -> None:
+        """Mark entities as belonging to the active operation. Painted
+        in a distinct colour beneath the selection layer so the user can
+        see at a glance what geometry the selected op references."""
+        self._active_op_refs = set(items)
         self.update()
 
     def set_profile_preview(self, segments: list[Segment]) -> None:
@@ -339,21 +358,32 @@ class Viewport(QWidget):
 
     def _draw_geometry(self, painter: QPainter) -> None:
         default_pen = QPen(COLOR_GEOMETRY, 1.4)
+        op_member_pen = QPen(COLOR_ACTIVE_OP_MEMBER, 2.0)
         selected_pen = QPen(COLOR_SELECTED, 2.2)
         selected_set = set(self._selection)
-        deferred: list[GeometryEntity] = []
+        op_member_set = self._active_op_refs
+        deferred_selected: list[GeometryEntity] = []
+        deferred_op_member: list[GeometryEntity] = []
         for layer in self._layers:
             if not layer.visible:
                 continue
             for entity in layer.entities:
-                if (layer.name, entity.id) in selected_set:
-                    # Draw selected entities last so they sit on top.
-                    deferred.append(entity)
+                key = (layer.name, entity.id)
+                if key in selected_set:
+                    # Selection sits on top of everything else.
+                    deferred_selected.append(entity)
+                    continue
+                if key in op_member_set:
+                    # Op members above defaults but below selection.
+                    deferred_op_member.append(entity)
                     continue
                 painter.setPen(default_pen)
                 self._draw_entity(painter, entity)
+        painter.setPen(op_member_pen)
+        for entity in deferred_op_member:
+            self._draw_entity(painter, entity)
         painter.setPen(selected_pen)
-        for entity in deferred:
+        for entity in deferred_selected:
             self._draw_entity(painter, entity)
 
     def _draw_entity(self, painter: QPainter, entity: GeometryEntity) -> None:

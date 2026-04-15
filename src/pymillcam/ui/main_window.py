@@ -279,6 +279,14 @@ class MainWindow(QMainWindow):
         self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
         self._action_delete_operation.setEnabled(False)
         self._action_delete_operation.triggered.connect(self._on_delete_operation)
+        self._action_add_to_op = QAction("&Add to active op", self)
+        self._action_add_to_op.setShortcut("Shift+A")
+        self._action_add_to_op.setEnabled(False)
+        self._action_add_to_op.triggered.connect(self._on_add_to_active_op)
+        self._action_remove_from_op = QAction("&Remove from active op", self)
+        self._action_remove_from_op.setShortcut("Shift+R")
+        self._action_remove_from_op.setEnabled(False)
+        self._action_remove_from_op.triggered.connect(self._on_remove_from_active_op)
         self._action_generate_gcode = QAction("&Generate G-code", self)
         self._action_generate_gcode.setShortcut("Ctrl+G")
         self._action_generate_gcode.setEnabled(False)
@@ -288,6 +296,9 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_add_profile)
         ops_menu.addAction(self._action_add_pocket)
         ops_menu.addAction(self._action_delete_operation)
+        ops_menu.addSeparator()
+        ops_menu.addAction(self._action_add_to_op)
+        ops_menu.addAction(self._action_remove_from_op)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_generate_gcode)
 
@@ -363,12 +374,19 @@ class MainWindow(QMainWindow):
 
     def _replace_project(self, project: Project, *, fit: bool) -> None:
         """Drop the current project for a new one; does NOT touch the undo stack."""
+        # Preserve op selection across the rebuild so the active-op
+        # highlight survives mutations like Add/Remove from active op.
+        prev_op = self._currently_selected_operation()
+        prev_op_id = prev_op.id if prev_op is not None else None
         self._project = project
         self._viewport.set_layers(project.geometry_layers)
         self._properties.set_operation(None)
         self._viewport.clear_profile_preview()
         self._viewport.clear_toolpath_preview()
+        self._viewport.set_active_op_refs([])
         self._rebuild_tree()
+        if prev_op_id is not None and self._find_operation(prev_op_id) is not None:
+            self._select_operation_in_tree(prev_op_id)
         if fit:
             self._viewport.fit_to_view()
         self._refresh_action_state()
@@ -385,6 +403,12 @@ class MainWindow(QMainWindow):
         self._action_delete_operation.setEnabled(
             self._currently_selected_operation() is not None
         )
+        # Add/Remove-from-active-op need both an active op AND a non-empty
+        # viewport selection.
+        active_op = self._currently_selected_operation()
+        has_selection = bool(self._viewport.selection)
+        self._action_add_to_op.setEnabled(active_op is not None and has_selection)
+        self._action_remove_from_op.setEnabled(active_op is not None and has_selection)
         self._action_undo.setEnabled(self._stack.can_undo)
         self._action_redo.setEnabled(self._stack.can_redo)
         self._action_undo.setText(
@@ -538,12 +562,24 @@ class MainWindow(QMainWindow):
                 op, self._tool_controller_for(op) if op else None
             )
             self._update_operation_preview(op)
+            self._update_active_op_refs(op)
             self._edit_snapshot = self._project.model_dump(mode="json")
         else:
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
+            self._viewport.set_active_op_refs([])
             self._edit_snapshot = None
         self._refresh_action_state()
+
+    def _update_active_op_refs(
+        self, op: ProfileOp | PocketOp | None
+    ) -> None:
+        if op is None:
+            self._viewport.set_active_op_refs([])
+            return
+        self._viewport.set_active_op_refs(
+            [(ref.layer_name, ref.entity_id) for ref in op.geometry_refs]
+        )
 
     def _update_operation_preview(
         self, op: ProfileOp | PocketOp | None
@@ -578,7 +614,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._syncing_selection = True
         try:
-            self._tree.clearSelection()
+            # Clear only entity-tree items; keep op selection so the
+            # active-op highlight survives a viewport selection change
+            # (lets the user select geometry to feed Add/Remove-from-op).
+            for item in list(self._tree.selectedItems()):
+                ref = item.data(0, Qt.ItemDataRole.UserRole)
+                if ref and ref[0] == "entity":
+                    item.setSelected(False)
             for layer_name, entity_id in items:
                 tree_item = self._find_entity_item(layer_name, entity_id)
                 if tree_item is not None:
@@ -587,9 +629,13 @@ class MainWindow(QMainWindow):
                 last = self._find_entity_item(*items[-1])
                 if last is not None:
                     self._tree.scrollToItem(last)
-            self._properties.set_operation(None)
-            self._viewport.clear_profile_preview()
-            self._edit_snapshot = None
+            # If no op is currently selected, the properties pane and
+            # preview should stay clear (old behavior). When an op IS
+            # selected, leave them alone so the user keeps editing it.
+            if self._currently_selected_operation() is None:
+                self._properties.set_operation(None)
+                self._viewport.clear_profile_preview()
+                self._edit_snapshot = None
         finally:
             self._syncing_selection = False
         self._refresh_action_state()
@@ -729,6 +775,54 @@ class MainWindow(QMainWindow):
         )
         if len(new_op_ids) == 1:
             self._select_operation_in_tree(new_op_ids[0])
+
+    def _on_add_to_active_op(self) -> None:
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        selection = list(self._viewport.selection)
+        if not selection:
+            return
+        op_id = op.id
+        op_name = op.name
+
+        def mutate(project: Project) -> None:
+            target = next((o for o in project.operations if o.id == op_id), None)
+            if target is None:
+                return
+            existing = {
+                (r.layer_name, r.entity_id) for r in target.geometry_refs
+            }
+            for layer_name, entity_id in selection:
+                if (layer_name, entity_id) in existing:
+                    continue
+                target.geometry_refs.append(
+                    GeometryRef(layer_name=layer_name, entity_id=entity_id)
+                )
+                existing.add((layer_name, entity_id))
+
+        self._do_action(f"Add {len(selection)} to {op_name}", mutate)
+
+    def _on_remove_from_active_op(self) -> None:
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        selection = set(self._viewport.selection)
+        if not selection:
+            return
+        op_id = op.id
+        op_name = op.name
+
+        def mutate(project: Project) -> None:
+            target = next((o for o in project.operations if o.id == op_id), None)
+            if target is None:
+                return
+            target.geometry_refs = [
+                r for r in target.geometry_refs
+                if (r.layer_name, r.entity_id) not in selection
+            ]
+
+        self._do_action(f"Remove {len(selection)} from {op_name}", mutate)
 
     def _on_delete_operation(self) -> None:
         op = self._currently_selected_operation()
