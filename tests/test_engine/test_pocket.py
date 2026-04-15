@@ -170,9 +170,34 @@ def test_generates_tool_change_spindle_and_final_retract() -> None:
     assert types[0] is MoveType.COMMENT
     assert MoveType.TOOL_CHANGE in types
     assert MoveType.SPINDLE_ON in types
-    assert MoveType.SPINDLE_OFF in types
+    # Spindle-off is emitted by the post-processor at program end, not
+    # per toolpath.
+    assert MoveType.SPINDLE_OFF not in types
     assert tp.instructions[-1].type is MoveType.RAPID
     assert tp.instructions[-1].z == project.settings.safe_height
+
+
+def test_spindle_on_is_followed_by_warmup_dwell() -> None:
+    """After M3 we should dwell for spindle_warmup_s so the spindle can
+    reach commanded RPM before the first Z move."""
+    project, op, _ = _project_with_rect_pocket()
+    project.settings.spindle_warmup_s = 2.0
+    tp = generate_pocket_toolpath(op, project)
+    spindle_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.SPINDLE_ON
+    )
+    next_inst = tp.instructions[spindle_idx + 1]
+    assert next_inst.type is MoveType.DWELL
+    assert next_inst.f == pytest.approx(2.0)
+
+
+def test_no_warmup_dwell_when_setting_is_zero() -> None:
+    project, op, _ = _project_with_rect_pocket()
+    project.settings.spindle_warmup_s = 0.0
+    tp = generate_pocket_toolpath(op, project)
+    types = [i.type for i in tp.instructions]
+    assert MoveType.DWELL not in types
 
 
 def test_single_depth_plunges_once_when_multi_depth_disabled() -> None:
@@ -322,7 +347,7 @@ def test_climb_and_conventional_reverse_each_other() -> None:
 
 def test_unknown_strategy_raises() -> None:
     project, op, _ = _project_with_rect_pocket()
-    op.strategy = PocketStrategy.ZIGZAG
+    op.strategy = PocketStrategy.SPIRAL
     with pytest.raises(PocketGenerationError, match="not implemented"):
         generate_pocket_toolpath(op, project)
 
@@ -633,3 +658,473 @@ def test_linear_ramp_start_is_before_ring_start_along_contour() -> None:
     # the ring is the bottom edge, so the ramp start is somewhere along
     # that edge — NOT at (1.5, 1.5) itself.
     assert ramp_start_xy != pytest.approx((1.5, 1.5), abs=1e-6)
+
+
+# ---------- zigzag strategy ----------------------------------------------
+
+
+def _project_with_rect_zigzag(
+    *,
+    w: float = 50.0,
+    h: float = 30.0,
+    cut_depth: float = -1.0,
+    stepover: float = 2.0,
+    tool_diameter: float = 3.0,
+    angle_deg: float = 0.0,
+    direction: MillingDirection = MillingDirection.CLIMB,
+) -> tuple[Project, PocketOp, GeometryEntity]:
+    entity = GeometryEntity(segments=_rect_segments(w, h), closed=True)
+    layer = GeometryLayer(name="Pocket_Boundary", entities=[entity])
+    tool = Tool(
+        name="flat",
+        geometry={
+            "diameter": tool_diameter,
+            "flute_length": 15,
+            "total_length": 50,
+            "shank_diameter": 3,
+            "flute_count": 2,
+        },
+    )
+    tc = ToolController(
+        tool_number=1, tool=tool,
+        feed_xy=1200.0, feed_z=300.0, spindle_rpm=18000,
+    )
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name=layer.name, entity_id=entity.id)
+        ],
+        cut_depth=cut_depth,
+        stepover=stepover,
+        direction=direction,
+        strategy=PocketStrategy.ZIGZAG,
+        angle_deg=angle_deg,
+        multi_depth=False,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    return project, op, entity
+
+
+def test_zigzag_strokes_clipped_to_machinable_polygon() -> None:
+    """All stroke endpoints must sit within the entity boundary after
+    subtracting one tool radius — i.e. the cutter's swept path stays
+    inside the pocket."""
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
+    strokes, finishing = _zigzag_strokes_and_finishing_ring(
+        entity,
+        tool_radius=1.5,
+        stepover=2.0,
+        direction=MillingDirection.CLIMB,
+        angle_deg=0.0,
+        chord_tolerance=0.02,
+    )
+    assert strokes
+    assert finishing
+    # Every stroke endpoint is inside [1.5, 48.5] × [1.5, 28.5] (bbox
+    # minus one tool radius), with a small tolerance for chord sag.
+    for stroke in strokes:
+        for seg in stroke:
+            for x, y in (seg.start, seg.end):
+                assert 1.5 - 1e-6 <= x <= 48.5 + 1e-6
+                assert 1.5 - 1e-6 <= y <= 28.5 + 1e-6
+
+
+def test_zigzag_strokes_alternate_direction() -> None:
+    """Row 0 goes +X, row 1 goes -X, row 2 goes +X, … — true zigzag."""
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
+    strokes, _ = _zigzag_strokes_and_finishing_ring(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
+    )
+    assert len(strokes) >= 4
+    # Row 0: start.x < end.x (goes +X)
+    assert strokes[0][0].start[0] < strokes[0][0].end[0]
+    # Row 1: start.x > end.x (goes -X)
+    assert strokes[1][0].start[0] > strokes[1][0].end[0]
+    # Row 2: back to +X
+    assert strokes[2][0].start[0] < strokes[2][0].end[0]
+
+
+def test_zigzag_stepover_spacing() -> None:
+    """Strokes are evenly spaced in the raster direction with spacing ≤
+    stepover (slight under-step to land the last row at the far wall)."""
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
+    strokes, _ = _zigzag_strokes_and_finishing_ring(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
+    )
+    ys = [s[0].start[1] for s in strokes]
+    # All y's should be within the machinable bbox [1.5, 28.5].
+    assert ys[0] == pytest.approx(1.5, abs=1e-6)
+    assert ys[-1] == pytest.approx(28.5, abs=1e-6)
+    # Spacing ≤ stepover.
+    for a, b in zip(ys[:-1], ys[1:], strict=True):
+        assert 0 < (b - a) <= 2.0 + 1e-9
+
+
+def test_zigzag_finishing_ring_preserves_arcs_on_circle_pocket() -> None:
+    """Circle pocket's finishing ring should be a single ArcSegment —
+    arc preservation on the wall matters; strokes themselves are always
+    lines."""
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    entity = _circle_entity(radius=20.0)
+    _, finishing = _zigzag_strokes_and_finishing_ring(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
+    )
+    assert len(finishing) == 1
+    assert isinstance(finishing[0], ArcSegment)
+
+
+def test_zigzag_angle_deg_rotates_strokes() -> None:
+    """With angle_deg=90, strokes run along ±Y instead of ±X."""
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
+    strokes, _ = _zigzag_strokes_and_finishing_ring(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 90.0, 0.02,
+    )
+    assert strokes
+    # All strokes should be vertical: near-constant X, varying Y.
+    for stroke in strokes:
+        for seg in stroke:
+            assert abs(seg.start[0] - seg.end[0]) < 1e-6
+            assert abs(seg.start[1] - seg.end[1]) > 1.0
+
+
+def test_zigzag_toolpath_has_header_and_final_retract() -> None:
+    project, op, _ = _project_with_rect_zigzag()
+    tp = generate_pocket_toolpath(op, project)
+    types = [i.type for i in tp.instructions]
+    assert types[0] is MoveType.COMMENT
+    assert MoveType.TOOL_CHANGE in types
+    assert MoveType.SPINDLE_ON in types
+    # Spindle-off is the post-processor's job at program end.
+    assert MoveType.SPINDLE_OFF not in types
+    assert tp.instructions[-1].type is MoveType.RAPID
+    assert tp.instructions[-1].z == project.settings.safe_height
+
+
+def test_zigzag_plunge_single_depth_plunges_once() -> None:
+    """PLUNGE + single-depth → one Z feed at cut_depth."""
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-1.0)
+    tp = generate_pocket_toolpath(op, project)
+    z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    assert len(z_feeds) == 1
+    assert z_feeds[0].z == pytest.approx(-1.0)
+
+
+def test_zigzag_emits_finishing_ring_after_strokes() -> None:
+    """The last feed sequence before the final retract is the finishing
+    ring — for a rectangle, four line feeds tracing the machinable-
+    polygon wall (bbox minus tool radius)."""
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-1.0)
+    tp = generate_pocket_toolpath(op, project)
+    # Collect XY feed targets at cut depth, in order.
+    xy_feeds = [
+        (i.x, i.y) for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is None and i.x is not None
+    ]
+    # The last 4 points should form the rectangle wall (in some order,
+    # corners at 1.5, 28.5 × 1.5, 48.5).
+    corners = {(1.5, 1.5), (48.5, 1.5), (48.5, 28.5), (1.5, 28.5)}
+    last4_round = {(round(x, 4), round(y, 4)) for x, y in xy_feeds[-4:]}
+    assert last4_round == corners
+
+
+def test_zigzag_linear_ramp_interpolates_z_along_first_stroke() -> None:
+    """LINEAR ramp on zigzag descends along the first stroke's opening
+    section from prev_z (0 on first pass) to pass_z."""
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-1.0)
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # After the feed to prev_z=0, the next feeds should have Z
+    # interpolating down to -1.0 while X advances along +X (first row).
+    seen_prev_z = False
+    ramp_feeds = []
+    for ins in tp.instructions:
+        if ins.type is MoveType.FEED and ins.z == pytest.approx(0.0):
+            seen_prev_z = True
+            continue
+        if not seen_prev_z:
+            continue
+        if ins.type is MoveType.FEED and ins.z is not None and ins.x is not None:
+            ramp_feeds.append(ins.z)
+        else:
+            break
+    assert ramp_feeds
+    for a, b in zip(ramp_feeds[:-1], ramp_feeds[1:], strict=True):
+        assert b <= a + 1e-9
+    assert ramp_feeds[-1] == pytest.approx(-1.0)
+
+
+def test_zigzag_linear_falls_back_to_plunge_when_stroke_pathologically_short() -> None:
+    """Past the back-and-forth leg cap (10), the engine falls back to
+    PLUNGE — user asked for an angle the geometry can't reasonably
+    accommodate."""
+    # Narrow 5x30 rect at stepover=1, angle 0.1°: ramp_length = 1/tan(0.1°)
+    # ≈ 573 mm over a 2 mm stroke → ceil(573/2) = 287 legs. Way above the
+    # cap → PLUNGE.
+    project, op, _ = _project_with_rect_zigzag(
+        w=5.0, h=30.0, cut_depth=-1.0, stepover=1.0
+    )
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=0.1, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    assert len(z_feeds) == 1
+    assert z_feeds[0].z == pytest.approx(-1.0)
+
+
+def test_zigzag_linear_back_and_forth_on_short_first_stroke() -> None:
+    """Regression: on a circle pocket the boundary-tangent first stroke
+    is shorter than the configured ramp_length. The engine oscillates
+    back-and-forth (n_legs = 2) to reach pass_z at stroke_start, then
+    emits one cleanup leg at pass_z across the full stroke.
+    """
+    entity = _circle_entity(radius=25.0)
+    layer = GeometryLayer(name="P", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name="P", entity_id=entity.id)],
+        cut_depth=-1.0,
+        stepover=2.0,
+        multi_depth=False,
+        strategy=PocketStrategy.ZIGZAG,
+        ramp=RampConfig(
+            strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+        ),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Leg 1 descends to −0.5, leg 2 descends to −1 at stroke_start.
+    # There is no third XY+Z feed — the cleanup leg at pass_z has
+    # z=None in IR (matches the convention for horizontal feed moves).
+    xy_z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.x is not None
+    ]
+    assert len(xy_z_feeds) == 2
+    assert xy_z_feeds[0].z == pytest.approx(-0.5)
+    assert xy_z_feeds[1].z == pytest.approx(-1.0)
+    # The two legs run in opposite X directions (back-and-forth).
+    assert (xy_z_feeds[0].x > 0) != (xy_z_feeds[1].x > 0)
+
+
+def test_zigzag_linear_back_and_forth_emits_cleanup_leg() -> None:
+    """After n_legs descending legs end at stroke_start at pass_z, the
+    engine emits one cleanup leg A→B at pass_z so stroke 1 is flat at
+    pass_z across its full length and the tool lands at stroke_end for
+    stroke 2 to continue naturally.
+    """
+    entity = _circle_entity(radius=25.0)
+    layer = GeometryLayer(name="P", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name="P", entity_id=entity.id)],
+        cut_depth=-1.0,
+        stepover=2.0,
+        multi_depth=False,
+        strategy=PocketStrategy.ZIGZAG,
+        ramp=RampConfig(
+            strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+        ),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
+    strokes, _ = _zigzag_strokes_and_finishing_ring(
+        entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
+    )
+    stroke_start = strokes[0][0].start
+    stroke_end = strokes[0][-1].end
+    tp = generate_pocket_toolpath(op, project)
+    # Last XY+Z feed (end of descent) must be at stroke_start.
+    xy_z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.x is not None
+    ]
+    assert xy_z_feeds[-1].x == pytest.approx(stroke_start[0], abs=1e-6)
+    assert xy_z_feeds[-1].y == pytest.approx(stroke_start[1], abs=1e-6)
+    assert xy_z_feeds[-1].z == pytest.approx(-1.0)
+    # The next XY feed (no Z) is the cleanup leg's endpoint = stroke_end.
+    descent_end_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins is xy_z_feeds[-1]
+    )
+    cleanup = next(
+        i for i in tp.instructions[descent_end_idx + 1:]
+        if i.type is MoveType.FEED and i.z is None and i.x is not None
+    )
+    assert cleanup.x == pytest.approx(stroke_end[0], abs=1e-6)
+    assert cleanup.y == pytest.approx(stroke_end[1], abs=1e-6)
+
+
+def test_zigzag_finishing_ring_starts_near_last_stroke_end() -> None:
+    """The finishing contour ring is rotated so it starts near the last
+    stroke's end, not at the offsetter's canonical start. For a circle
+    pocket this means the `G1 X Y` transit before the ring-arc is
+    within chord-tolerance of the last stroke's end (no diagonal feed
+    across the cleared pocket)."""
+    entity = _circle_entity(radius=25.0)
+    layer = GeometryLayer(name="P", entities=[entity])
+    tool = Tool(name="flat", geometry={"diameter": 3.0})
+    tc = ToolController(tool_number=1, tool=tool)
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name="P", entity_id=entity.id)],
+        cut_depth=-1.0,
+        stepover=2.0,
+        multi_depth=False,
+        strategy=PocketStrategy.ZIGZAG,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # Find the G2/G3 arc that is the finishing ring (the one with z=None
+    # after all strokes). Its preceding feed is the transit; the feed
+    # after it is (nothing — it's the last toolpath move before retract).
+    ring_arc_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type in (MoveType.ARC_CW, MoveType.ARC_CCW) and ins.z is None
+    )
+    transit = tp.instructions[ring_arc_idx - 1]
+    assert transit.type is MoveType.FEED and transit.z is None
+    # Walk back to find the last stroke end (previous feed with XY, no Z).
+    last_stroke_feed = next(
+        ins for ins in reversed(tp.instructions[:ring_arc_idx - 1])
+        if ins.type is MoveType.FEED and ins.x is not None and ins.z is None
+    )
+    dist = math.hypot(
+        transit.x - last_stroke_feed.x, transit.y - last_stroke_feed.y
+    )
+    # Within chord tolerance (0.02 default) the transit is effectively
+    # zero. Give a small margin for accumulated float ops.
+    assert dist < 0.05, (
+        f"expected transit to finishing ring ≤0.05 mm from last stroke end, "
+        f"got {dist} mm"
+    )
+
+
+def test_zigzag_linear_single_leg_when_stroke_is_long_enough() -> None:
+    """On a 50×30 rect the first stroke (~47 mm) easily fits the 19 mm
+    ramp_length at 3° for 1 mm descent. n_legs = 1, one partial ramp
+    then continues at pass_z."""
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-1.0, stepover=2.0)
+    op.ramp = RampConfig(
+        strategy=RampStrategy.LINEAR, angle_deg=3.0, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    xy_z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.x is not None
+    ]
+    # Exactly one XY+Z ramp feed (single-segment stroke → one IR move).
+    assert len(xy_z_feeds) == 1
+    assert xy_z_feeds[0].z == pytest.approx(-1.0)
+
+
+def test_zigzag_helical_falls_back_to_linear() -> None:
+    """HELICAL on zigzag isn't supported yet — it resolves to LINEAR
+    (observable as ramp feeds descending along X with no arc moves)."""
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-1.0)
+    op.ramp = RampConfig(
+        strategy=RampStrategy.HELICAL, angle_deg=3.0, radius=1.0
+    )
+    tp = generate_pocket_toolpath(op, project)
+    # No arc moves — fallback routed through LINEAR on line strokes.
+    assert not any(
+        i.type in (MoveType.ARC_CW, MoveType.ARC_CCW)
+        for i in tp.instructions
+    )
+    # And there's more than one Z feed (ramp feeds + pass depth).
+    z_feeds = [i for i in tp.instructions
+               if i.type is MoveType.FEED and i.z is not None]
+    assert len(z_feeds) > 1
+
+
+def test_zigzag_multi_depth_emits_one_plunge_per_pass() -> None:
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-3.0)
+    op.multi_depth = True
+    op.stepdown = 1.0
+    tp = generate_pocket_toolpath(op, project)
+    z_feeds = [
+        i for i in tp.instructions
+        if i.type is MoveType.FEED and i.z is not None
+    ]
+    assert [f.z for f in z_feeds] == [
+        pytest.approx(-1.0),
+        pytest.approx(-2.0),
+        pytest.approx(-3.0),
+    ]
+
+
+def test_zigzag_multi_depth_retracts_between_passes() -> None:
+    project, op, _ = _project_with_rect_zigzag(cut_depth=-3.0)
+    op.multi_depth = True
+    op.stepdown = 1.0
+    clearance = project.settings.clearance_plane
+    tp = generate_pocket_toolpath(op, project)
+    plunge_indices = [
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z is not None
+    ]
+    for before, after in zip(
+        plunge_indices[:-1], plunge_indices[1:], strict=True
+    ):
+        between = tp.instructions[before + 1 : after]
+        assert any(
+            ins.type is MoveType.RAPID
+            and ins.z == pytest.approx(clearance)
+            for ins in between
+        )
+
+
+def test_zigzag_climb_and_conventional_reverse_finishing_ring() -> None:
+    """Climb/conventional flips the finishing ring direction (the wall
+    cut). Strokes themselves are invariant — MVP doesn't try to flip
+    interior raster for climb, since "climb" isn't well-defined on a
+    stroke cut on both sides."""
+    p_climb, op_climb, _ = _project_with_rect_zigzag(
+        direction=MillingDirection.CLIMB
+    )
+    p_conv, op_conv, _ = _project_with_rect_zigzag(
+        direction=MillingDirection.CONVENTIONAL
+    )
+    climb = generate_pocket_toolpath(op_climb, p_climb)
+    conv = generate_pocket_toolpath(op_conv, p_conv)
+
+    def last_four_feeds(tp) -> list[tuple[float, float]]:
+        xy = [
+            (i.x, i.y) for i in tp.instructions
+            if i.type is MoveType.FEED and i.z is None and i.x is not None
+        ]
+        return xy[-4:]
+
+    # Same four corners; order differs.
+    assert sorted(last_four_feeds(climb)) == sorted(last_four_feeds(conv))
+    assert last_four_feeds(climb) != last_four_feeds(conv)

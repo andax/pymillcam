@@ -55,6 +55,12 @@ class ProjectSettings(BaseModel):
     # G-code length; tighten to 0.01 mm or below for metal finishing, loosen
     # to 0.05 mm for very rough cuts where every byte counts.
     chord_tolerance: float = 0.02
+    # Dwell in seconds after M3 to let the spindle reach commanded RPM
+    # before cutting. Emitted as a G4 P<s> immediately after each
+    # SPINDLE_ON. 2 s is a safe default for most router/mill spindles;
+    # VFD-driven spindles ramp up in 1-3 s. Will move to MachineDefinition
+    # when machine macros are wired to post-processors.
+    spindle_warmup_s: float = 2.0
 
 
 class Project(BaseModel):

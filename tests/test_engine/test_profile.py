@@ -99,15 +99,18 @@ def test_z_levels_non_negative_cut_depth_returns_empty() -> None:
 
 # ---------- generate_profile_toolpath ------------------------------------
 
-def test_generates_tool_change_spindle_on_and_off() -> None:
+def test_generates_tool_change_spindle_on_and_final_retract() -> None:
     project, op, _ = _project_with_rectangle(stepdown=2.0)
     tp = generate_profile_toolpath(op, project)
     types = [i.type for i in tp.instructions]
     assert types[0] == MoveType.COMMENT
     assert MoveType.TOOL_CHANGE in types
     assert MoveType.SPINDLE_ON in types
-    assert MoveType.SPINDLE_OFF in types
-    # Final retract is a rapid to safe_height
+    # Spindle-off is emitted by the post-processor at program end, not
+    # per toolpath (so the spindle doesn't cycle between ops).
+    assert MoveType.SPINDLE_OFF not in types
+    # Final retract is a rapid to safe_height — the spindle is still
+    # running when the tool reaches safe height.
     assert tp.instructions[-1].type is MoveType.RAPID
     assert tp.instructions[-1].z == project.settings.safe_height
 

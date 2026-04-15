@@ -110,6 +110,10 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
         IRInstruction(type=MoveType.TOOL_CHANGE, tool_number=tool_controller.tool_number)
     )
     instructions.append(IRInstruction(type=MoveType.SPINDLE_ON, s=tool_controller.spindle_rpm))
+    if project.settings.spindle_warmup_s > 0:
+        instructions.append(
+            IRInstruction(type=MoveType.DWELL, f=project.settings.spindle_warmup_s)
+        )
 
     for ref in op.geometry_refs:
         entity = _resolve_entity(ref.layer_name, ref.entity_id, project)
@@ -131,7 +135,6 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
             ramp_config=op.ramp,
         )
 
-    instructions.append(IRInstruction(type=MoveType.SPINDLE_OFF))
     instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
     return toolpath
 

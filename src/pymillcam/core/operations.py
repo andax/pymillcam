@@ -50,7 +50,10 @@ class PocketStrategy(StrEnum):
     # OFFSET = concentric inward rings, starting at the outermost ring
     # (one tool radius in from the boundary) and stepping inward by the
     # configured stepover until the region closes up.
-    # ZIGZAG / SPIRAL are planned but not implemented yet.
+    # ZIGZAG = parallel raster strokes clipped to the machinable area,
+    # alternating direction, followed by a finishing contour pass around
+    # the walls so they aren't left scalloped.
+    # SPIRAL is reserved.
     OFFSET = "offset"
     ZIGZAG = "zigzag"
     SPIRAL = "spiral"
@@ -128,10 +131,16 @@ class PocketOp(Operation):
     type: Literal["pocket"] = "pocket"
     strategy: PocketStrategy = PocketStrategy.OFFSET
     direction: MillingDirection = MillingDirection.CLIMB
-    # Radial step between successive concentric rings. Typical sensible
-    # range is 30-50% of tool diameter; 2 mm is a safe default for the
-    # 3 mm default tool.
+    # Radial step between successive concentric rings (OFFSET) or
+    # perpendicular spacing between parallel strokes (ZIGZAG). Typical
+    # sensible range is 30-50% of tool diameter; 2 mm is a safe default
+    # for the 3 mm default tool.
     stepover: float = 2.0
+    # Rotation of the ZIGZAG stroke direction, CCW degrees from +X. 0 =
+    # horizontal raster. Ignored by OFFSET / SPIRAL. Kept on the base
+    # op (rather than a ZigzagOp subclass) so the UI can expose it
+    # without changing op type when the user switches strategies.
+    angle_deg: float = 0.0
     # Pockets default to multi-pass since full-depth plunging with a flat
     # endmill is unusual even for shallow cuts. Stepdown follows the same
     # ToolController cascade as profiles.
