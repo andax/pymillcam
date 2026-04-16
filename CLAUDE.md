@@ -100,6 +100,18 @@ Phase 2 progress (ongoing):
 - ✅ Profile tabs (rectangular, auto-spaced by arc-length, multi-depth
   aware with `effective_z = max(planned_z(s), tab_z(s))`; coexists with
   on-contour ramp).
+- ✅ Pocket rest-machining for V-notch corners (OFFSET only). After the
+  regular + adaptive passes, the engine tracks each emitted ring's
+  centerline, computes `swept = ∪ centerline.buffer(tool_radius)` and
+  `cuttable = machinable.buffer(-r).buffer(+r)`, and emits one cleanup
+  ring per residual component inside `residual ∩ tool_center_space` —
+  i.e., the part of the uncut area the tool center can physically reach.
+  This stays inside the uncut region rather than walking through already-
+  swept territory (an earlier attempt that used `residual.buffer(+r) ∩
+  tool_center_space` produced redundant overlapping paths). Gated by
+  `PocketOp.rest_machining` (default True). The main iteration also
+  filters pinch-off noise polygons (area < `(10·chord_tolerance)²`) so
+  they don't pollute the swept-area model.
 - Pocket SPIRAL — not yet.
 - Drill, tool library, machine definitions — not yet.
 
@@ -111,20 +123,19 @@ Pocket islands known limitations:
     pieces still use feed-at-depth between pieces (the old multi-region
     safety hole). Use OFFSET for pockets where this would crash the
     cutter into an island.
+  - ZIGZAG does not participate in rest-machining; residuals there have
+    a different shape (stroke-clipped) and are best tackled alongside
+    the multi-region connector safety fix.
+  - Large residuals get a single cleanup ring, which may not fully
+    cover the interior if the residual is wider than ~2·tool_radius.
+    Small V-notch corners (the main case) are cleared; revisit if a
+    test case surfaces wider residuals.
   - When stepover doesn't divide the wall thickness evenly, the
     OFFSET buffer-iteration would otherwise stop one stepover short of
     the centerline, leaving a sliver. The engine emits an "adaptive
     last pass" at half-stepover past the last successful distance to
     close the residual; skipped if the resulting polygon area is
     < `stepover²` (avoids microscopic Shapely artefacts).
-  - V-notch corners (where an island grows close enough to the
-    boundary that the buffer notches the polygon's exterior) leave a
-    residual the inward-offset cannot reach — no buffer iteration
-    produces a polygon at the corner tip. Needs proper rest-machining
-    (medial-axis cleanup of the residual area) which isn't implemented
-    yet. Practically: ~0.05 mm² uncut per V-notch for the motor-section
-    geometry; visible in the viewport but smaller than typical kerf
-    width / tool deflection.
 
 `ProjectSettings.chord_tolerance` defaults to 0.02 mm (was 0.05 in early
 Phase 1). Per-op override via the Properties panel.

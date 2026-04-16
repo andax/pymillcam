@@ -102,6 +102,7 @@ class PropertiesPanel(QWidget):
         f.ramp_strategy.currentTextChanged.connect(self._on_pocket_changed)
         f.ramp_angle.valueChanged.connect(self._on_pocket_changed)
         f.ramp_radius.valueChanged.connect(self._on_pocket_changed)
+        f.rest_machining.toggled.connect(self._on_pocket_changed)
 
     def set_operation(
         self,
@@ -177,6 +178,7 @@ class PropertiesPanel(QWidget):
         f.ramp_strategy.setCurrentText(op.ramp.strategy.value)
         f.ramp_angle.setValue(op.ramp.angle_deg)
         f.ramp_radius.setValue(op.ramp.radius)
+        f.rest_machining.setChecked(op.rest_machining)
         if tool_controller is not None:
             diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
             f.tool_diameter.setValue(diameter)
@@ -258,6 +260,7 @@ class PropertiesPanel(QWidget):
             angle_deg=f.ramp_angle.value(),
             radius=f.ramp_radius.value(),
         )
+        op.rest_machining = f.rest_machining.isChecked()
         if self._tool_controller is not None:
             self._tool_controller.tool.geometry["diameter"] = (
                 f.tool_diameter.value()
@@ -397,6 +400,7 @@ class _PocketForm(QWidget):
         self.ramp_radius.setDecimals(3)
         self.ramp_radius.setSingleStep(0.25)
         self.ramp_radius.setSuffix(" mm")
+        self.rest_machining = QCheckBox("Rest machining (V-notch cleanup)")
 
         form = QFormLayout(self)
         form.addRow("Name", self.name)
@@ -411,6 +415,7 @@ class _PocketForm(QWidget):
         form.addRow("Ramp strategy", self.ramp_strategy)
         form.addRow("Ramp angle", self.ramp_angle)
         form.addRow("Ramp radius", self.ramp_radius)
+        form.addRow("", self.rest_machining)
 
 
 def _make_lead_widgets() -> tuple[QComboBox, QDoubleSpinBox]:

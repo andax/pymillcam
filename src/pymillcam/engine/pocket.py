@@ -41,6 +41,7 @@ from shapely.geometry import (
     Point,
     Polygon,
 )
+from shapely.ops import unary_union
 
 from pymillcam.core.containment import build_pocket_regions
 from pymillcam.core.geometry import GeometryEntity
@@ -110,6 +111,7 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
             ring_groups = _concentric_rings_with_islands(
                 boundary, islands, tool_radius, op.stepover,
                 op.direction, chord_tolerance,
+                rest_machining=op.rest_machining,
             )
             for group in ring_groups:
                 for ring in group:
@@ -210,6 +212,7 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             ring_groups = _concentric_rings_with_islands(
                 boundary, islands, tool_radius, op.stepover,
                 op.direction, chord_tolerance,
+                rest_machining=op.rest_machining,
             )
             rings = [ring for group in ring_groups for ring in group]
             if not rings:
@@ -361,6 +364,7 @@ def _concentric_rings_with_islands(
     stepover: float,
     direction: MillingDirection,
     chord_tolerance: float,
+    rest_machining: bool = True,
 ) -> list[list[list[Segment]]]:
     """Build inward concentric rings from a boundary-with-holes.
 
@@ -374,6 +378,12 @@ def _concentric_rings_with_islands(
     Arc preservation isn't supported here (the analytical offsetter
     doesn't take holes); the buffer fallback discretises arcs at the
     op's chord_tolerance.
+
+    When `rest_machining` is True, after the regular + adaptive passes
+    we compute the uncut-but-cuttable residual area and emit one extra
+    ring-group per reachable residual component. This cleans up V-notch
+    corners where an island grows close to the boundary and the
+    inward-offset iteration notches away from the corner tip.
     """
     if not boundary.segments or not boundary.closed:
         raise PocketGenerationError(
@@ -409,6 +419,19 @@ def _concentric_rings_with_islands(
     )
 
     groups: list[list[list[Segment]]] = []
+    # Track each emitted polygon's ring centerlines as Shapely LineStrings
+    # so rest-machining can compute the swept area from the actual cutter
+    # paths (exterior + interior rings around islands).
+    centerlines: list[LineString] = []
+    # When the eroded polygon pinches around an island, Shapely's mitre
+    # buffer can return dozens of microscopic polygons (numerical noise)
+    # alongside the legitimate result. Filter them out so they don't
+    # become spurious ring-groups — and don't pollute rest-machining's
+    # swept-area estimate, which would otherwise produce false residuals.
+    # Threshold scales with chord_tolerance so it tracks discretization
+    # error; the 100× factor is empirical, catching observed noise up to
+    # ~0.005 mm² at default chord_tolerance=0.02.
+    min_ring_area = max((chord_tolerance * 10) ** 2, 1e-4)
     distance = tool_radius
     safety_cap = 10_000
     for _ in range(safety_cap):
@@ -421,7 +444,10 @@ def _concentric_rings_with_islands(
             # polygon pinches off around an island. Walk recursively so we
             # don't stop iterating just because an intermediate result has
             # mixed types — there's still material to clear.
-            polys = _extract_polygons(offset)
+            polys = [
+                p for p in _extract_polygons(offset)
+                if p.area >= min_ring_area
+            ]
         if not polys:
             # Adaptive last pass: when the next regular iteration is
             # empty, the previous ring may still be > tool_diameter from
@@ -432,11 +458,10 @@ def _concentric_rings_with_islands(
             # small to be a meaningful cut (avoids emitting microscopic
             # multi-polygon artefacts from Shapely's near-empty results).
             #
-            # NOTE: this only helps with annulus-shaped residuals (uniform
-            # wall thickness). It does NOT clean up V-notch corners where
-            # an island reaches close to the boundary — those need
-            # rest-machining (medial axis or residual-area cleanup),
-            # which isn't implemented yet. Documented in CLAUDE.md.
+            # This handles annulus-shaped residuals (uniform wall
+            # thickness). V-notch corners — where an island grows close
+            # to the boundary — are handled by the rest-machining pass
+            # below.
             half_d = distance - stepover / 2.0
             half_polys = _extract_polygons(
                 machinable.buffer(-half_d, join_style="mitre")
@@ -448,12 +473,82 @@ def _concentric_rings_with_islands(
                 g = _polygon_to_ring_group(poly, direction)
                 if g:
                     groups.append(g)
+                    centerlines.extend(_polygon_centerlines(poly))
             break
         for poly in polys:
             g = _polygon_to_ring_group(poly, direction)
             if g:
                 groups.append(g)
+                centerlines.extend(_polygon_centerlines(poly))
         distance += stepover
+
+    if rest_machining and centerlines:
+        groups.extend(
+            _rest_machining_groups(
+                machinable, centerlines, tool_radius, direction
+            )
+        )
+    return groups
+
+
+def _polygon_centerlines(poly: Polygon) -> list[LineString]:
+    """Extract exterior + interior rings as LineStrings (the cutter-
+    centerline paths for a single emitted ring-group)."""
+    lines: list[LineString] = [LineString(poly.exterior.coords)]
+    for interior in poly.interiors:
+        lines.append(LineString(interior.coords))
+    return lines
+
+
+def _rest_machining_groups(
+    machinable: Polygon,
+    centerlines: list[LineString],
+    tool_radius: float,
+    direction: MillingDirection,
+) -> list[list[list[Segment]]]:
+    """Emit cleanup ring-groups for uncut-but-cuttable residual area.
+
+    `cuttable` is the material the tool can physically reach given its
+    radius: `machinable.buffer(-r).buffer(+r)`. `swept` is the material
+    the regular passes already removed, approximated by each emitted
+    centerline buffered by tool_radius. `residual = cuttable − swept` is
+    the uncut material.
+
+    For the tool to clean up residual component `r` without gouging
+    walls, its center must stay inside `tool_center_space`. The valid
+    walking area is therefore `r ∩ tool_center_space` — the part of the
+    residual the tool center can actually reach. Walking this shape's
+    exterior traces the border between residual and swept on one side
+    and along the walls on the other, naturally descending into V-notch
+    corridors.
+
+    Note: a single exterior walk only covers residuals up to ~2·tool_radius
+    wide. Wider residual chunks would need multiple rings inside the
+    component — revisit when a test case surfaces them. Skips residuals
+    below `(0.2·tool_radius)²` (below kerf/deflection on a typical router).
+    """
+    tool_center_space = machinable.buffer(-tool_radius)
+    if tool_center_space.is_empty:
+        return []
+    swept = unary_union([line.buffer(tool_radius) for line in centerlines])
+    cuttable = tool_center_space.buffer(+tool_radius)
+    residual = cuttable.difference(swept)
+    if residual.is_empty:
+        return []
+
+    min_residual_area = (tool_radius * 0.2) ** 2
+
+    groups: list[list[list[Segment]]] = []
+    for r in _extract_polygons(residual):
+        if r.area < min_residual_area:
+            continue
+        target = r.intersection(tool_center_space)
+        for t in _extract_polygons(target):
+            if t.area < min_residual_area:
+                continue
+            g = _polygon_to_ring_group(t, direction)
+            if g:
+                groups.append(g)
     return groups
 
 

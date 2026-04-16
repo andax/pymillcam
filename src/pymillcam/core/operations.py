@@ -165,3 +165,9 @@ class PocketOp(Operation):
     # classically safer in small pockets where the helix fits in a
     # cleared area, but LINEAR produces a cleaner wall on large pockets.
     ramp: RampConfig = Field(default_factory=RampConfig)
+    # Rest-machining: after concentric rings + adaptive last pass,
+    # compute the residual (uncut-but-cuttable area) and emit extra
+    # ring-groups inside each residual component to clean up V-notch
+    # corners where an island grows close to the boundary. OFFSET only;
+    # ZIGZAG has a different residual pattern handled separately.
+    rest_machining: bool = True

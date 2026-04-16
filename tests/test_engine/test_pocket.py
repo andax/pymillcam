@@ -1373,3 +1373,154 @@ def test_pocket_with_no_closed_geometry_raises() -> None:
     )
     with pytest.raises(PocketGenerationError, match="no closed boundary"):
         generate_pocket_toolpath(op, project)
+
+
+# ---------- rest machining ----------------------------------------------
+
+def _v_notch_boundary_and_island() -> tuple[GeometryEntity, GeometryEntity]:
+    """20x15 rectangle with a triangular island whose vertex comes close
+    to the top wall — reliably produces a V-notch residual with
+    tool_radius=1.0 and stepover=2.5."""
+    boundary = GeometryEntity(segments=[
+        LineSegment(start=(0, 0), end=(20, 0)),
+        LineSegment(start=(20, 0), end=(20, 15)),
+        LineSegment(start=(20, 15), end=(0, 15)),
+        LineSegment(start=(0, 15), end=(0, 0)),
+    ], closed=True)
+    island = GeometryEntity(segments=[
+        LineSegment(start=(8, 8), end=(16, 8)),
+        LineSegment(start=(16, 8), end=(12, 13)),
+        LineSegment(start=(12, 13), end=(8, 8)),
+    ], closed=True)
+    return boundary, island
+
+
+def test_rest_machining_defaults_true_on_pocket_op() -> None:
+    """PocketOp should default to rest_machining=True so users get
+    V-notch cleanup without opt-in."""
+    op = PocketOp(name="P", tool_controller_id=1, cut_depth=-1.0)
+    assert op.rest_machining is True
+
+
+def test_rest_machining_adds_groups_on_v_notch_geometry() -> None:
+    """A V-notch corner (island vertex close to boundary) leaves a
+    residual after regular concentric rings. rest_machining=True emits
+    extra ring-groups to clean it up; rest_machining=False does not."""
+    from pymillcam.engine.pocket import _concentric_rings_with_islands
+
+    boundary, island = _v_notch_boundary_and_island()
+    groups_off = _concentric_rings_with_islands(
+        boundary, [island], tool_radius=1.0, stepover=2.5,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.05,
+        rest_machining=False,
+    )
+    groups_on = _concentric_rings_with_islands(
+        boundary, [island], tool_radius=1.0, stepover=2.5,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.05,
+        rest_machining=True,
+    )
+    assert len(groups_on) > len(groups_off)
+
+
+def test_rest_machining_no_residual_on_clean_annulus() -> None:
+    """Concentric circles form a perfect annulus: after regular passes
+    the entire cuttable area is swept. rest_machining should add zero
+    groups (no false positives from pinch-off noise)."""
+    from pymillcam.engine.pocket import _concentric_rings_with_islands
+
+    outer = GeometryEntity(segments=[
+        ArcSegment(center=(0, 0), radius=20.0,
+                   start_angle_deg=0.0, sweep_deg=360.0)
+    ], closed=True)
+    inner = GeometryEntity(segments=[
+        ArcSegment(center=(0, 0), radius=10.0,
+                   start_angle_deg=0.0, sweep_deg=360.0)
+    ], closed=True)
+    groups_off = _concentric_rings_with_islands(
+        outer, [inner], tool_radius=1.0, stepover=2.0,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.02,
+        rest_machining=False,
+    )
+    groups_on = _concentric_rings_with_islands(
+        outer, [inner], tool_radius=1.0, stepover=2.0,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.02,
+        rest_machining=True,
+    )
+    assert len(groups_on) == len(groups_off)
+
+
+def test_rest_machining_flag_propagates_through_toolpath() -> None:
+    """The PocketOp.rest_machining flag should reach the engine — turning
+    it off on a V-notch geometry should produce fewer feed moves than on."""
+    boundary, island = _v_notch_boundary_and_island()
+    layer = GeometryLayer(name="L", entities=[boundary, island])
+    tool = Tool(name="flat", geometry={
+        "diameter": 2.0, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+
+    def _feed_count(rest: bool) -> int:
+        op = PocketOp(
+            name="VN", tool_controller_id=1,
+            geometry_refs=[
+                GeometryRef(layer_name=layer.name, entity_id=boundary.id),
+                GeometryRef(layer_name=layer.name, entity_id=island.id),
+            ],
+            cut_depth=-1.0, stepover=2.5,
+            strategy=PocketStrategy.OFFSET,
+            ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+            rest_machining=rest,
+        )
+        project = Project(
+            geometry_layers=[layer], tool_controllers=[tc], operations=[op],
+        )
+        tp = generate_pocket_toolpath(op, project)
+        return sum(
+            1 for i in tp.instructions
+            if i.type is MoveType.FEED and i.x is not None
+        )
+
+    assert _feed_count(rest=True) > _feed_count(rest=False)
+
+
+def test_rest_machining_groups_within_tool_center_space() -> None:
+    """Cleanup ring-groups must have all their points inside the
+    tool-center-reachable area: exterior of boundary buffered inward by
+    tool_radius, hollowed by each island buffered outward by tool_radius.
+    This guarantees the cutter doesn't gouge walls."""
+    from pymillcam.engine.pocket import _concentric_rings_with_islands
+
+    boundary, island = _v_notch_boundary_and_island()
+    tool_radius = 1.0
+    # Baseline groups without rest-machining
+    base = _concentric_rings_with_islands(
+        boundary, [island], tool_radius=tool_radius, stepover=2.5,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.05,
+        rest_machining=False,
+    )
+    full = _concentric_rings_with_islands(
+        boundary, [island], tool_radius=tool_radius, stepover=2.5,
+        direction=MillingDirection.CLIMB, chord_tolerance=0.05,
+        rest_machining=True,
+    )
+    extra = full[len(base):]
+    assert extra, "expected at least one rest-machining group"
+
+    from shapely.geometry import Point, Polygon
+    bp = Polygon([(0, 0), (20, 0), (20, 15), (0, 15)])
+    ip = Polygon([(8, 8), (16, 8), (12, 13)])
+    machinable = Polygon(bp.exterior.coords, holes=[ip.exterior.coords])
+    tool_center_space = machinable.buffer(-tool_radius)
+
+    for group in extra:
+        for ring in group:
+            for seg in ring:
+                p = Point(seg.start)
+                # Shapely buffer has numerical slop; allow 1e-6.
+                assert tool_center_space.buffer(1e-6).contains(p), (
+                    f"rest-machining point {seg.start} outside tool-center space"
+                )
