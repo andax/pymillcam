@@ -668,8 +668,12 @@ pymillcam/
 │       │   ├── drill.py             #   Simple / peck / chip-break drill cycles
 │       │   ├── ir.py                #   IRInstruction + Toolpath dataclasses
 │       │   ├── ir_walker.py         #   IR → XY moves for viewport overlay
-│       │   ├── pocket/               #   OFFSET + ZIGZAG subpackage (__init__ dispatch,
-│       │   │                         #   offset, zigzag, rest_machining, _shared)
+│       │   ├── pocket/              #   Pocket strategies subpackage
+│       │   │   ├── __init__.py       #     Strategy dispatch + public API
+│       │   │   ├── _shared.py        #     Cross-strategy helpers
+│       │   │   ├── offset.py         #     Concentric rings + helix/ramp emit
+│       │   │   ├── rest_machining.py #     V-notch cleanup (OFFSET only)
+│       │   │   └── zigzag.py         #     Raster strokes + finishing rings
 │       │   ├── profile.py           #   Profile toolpath (offsets, leads, ramp, tabs)
 │       │   ├── services.py          #   ToolpathService facade + op-type registry
 │       │   ├── tabs.py              #   Tab plateau placement + Z modulation
