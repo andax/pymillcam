@@ -93,6 +93,13 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
     raster strokes followed by the finishing contour ring. Used by the
     UI to show a live preview as the user edits operation parameters.
     """
+    # SPIRAL is not implemented. Without this short-circuit, the preview
+    # would fall through to the OFFSET ring branch and draw concentric
+    # rings — wrong strategy, would mislead the user about what G-code
+    # generation will actually produce (it will raise).
+    if op.strategy is PocketStrategy.SPIRAL:
+        return []
+
     tool_controller = _resolve_tool_controller(op, project)
     chord_tolerance = (
         op.chord_tolerance
@@ -107,9 +114,11 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
     preview: list[Segment] = []
     for boundary, islands in build_pocket_regions(entities):
         if op.strategy is PocketStrategy.ZIGZAG:
-            strokes, finishing_rings = _zigzag_strokes_and_finishing_ring(
-                boundary, tool_radius, op.stepover, op.direction,
-                op.angle_deg, chord_tolerance, islands=islands,
+            strokes, finishing_rings, _machinable = (
+                _zigzag_strokes_and_finishing_ring(
+                    boundary, tool_radius, op.stepover, op.direction,
+                    op.angle_deg, chord_tolerance, islands=islands,
+                )
             )
             for stroke in strokes:
                 preview.extend(stroke)
@@ -191,9 +200,11 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
         )
     for boundary, islands in regions:
         if op.strategy is PocketStrategy.ZIGZAG:
-            strokes, finishing_rings = _zigzag_strokes_and_finishing_ring(
-                boundary, tool_radius, op.stepover, op.direction,
-                op.angle_deg, chord_tolerance, islands=islands,
+            strokes, finishing_rings, machinable = (
+                _zigzag_strokes_and_finishing_ring(
+                    boundary, tool_radius, op.stepover, op.direction,
+                    op.angle_deg, chord_tolerance, islands=islands,
+                )
             )
             if not strokes and not finishing_rings:
                 raise PocketGenerationError(
@@ -208,6 +219,7 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
                 instructions,
                 strokes=strokes,
                 finishing_rings=finishing_rings,
+                machinable=machinable,
                 tool_controller=tool_controller,
                 z_levels=z_levels,
                 safe_height=safe_height,
@@ -1169,7 +1181,7 @@ def _zigzag_strokes_and_finishing_ring(
     chord_tolerance: float,
     *,
     islands: list[GeometryEntity] | None = None,
-) -> tuple[list[list[Segment]], list[list[Segment]]]:
+) -> tuple[list[list[Segment]], list[list[Segment]], Polygon | None]:
     """Generate zigzag raster strokes plus per-wall finishing rings.
 
     Strokes are horizontal in a coordinate frame rotated by `angle_deg`
@@ -1185,13 +1197,12 @@ def _zigzag_strokes_and_finishing_ring(
     Finishing rings: one for the boundary (arc-preserved when the
     analytical offsetter handles the shape) and one for each island
     (the island contour offset OUTWARD by tool_radius so the cutter edge
-    is flush with the island wall). Returns an empty
-    `(strokes, finishing_rings)` pair when the tool is too large to fit.
+    is flush with the island wall).
 
-    Known limitation: connectors between disjoint pieces of the same
-    scan-line stroke remain feed-at-depth; with islands, those connectors
-    can cross the island. Use OFFSET for islanded pockets until this
-    safety fix lands.
+    Returns ``(strokes, finishing_rings, machinable)`` — ``machinable``
+    is the clipping polygon (with island holes already subtracted) so
+    the emitter can test whether each inter-stroke connector stays
+    inside safe territory; ``None`` when the tool is too large to fit.
     """
     if not entity.segments:
         raise PocketGenerationError(
@@ -1214,14 +1225,14 @@ def _zigzag_strokes_and_finishing_ring(
         entity, tool_radius, chord_tolerance
     )
     if offset_segments is None:
-        return [], []
+        return [], [], None
     finishing_rings = [_apply_direction(offset_segments, direction)]
 
     machinable = segments_to_shapely(
         offset_segments, closed=True, tolerance=chord_tolerance
     )
     if not isinstance(machinable, Polygon) or machinable.is_empty:
-        return [], finishing_rings
+        return [], finishing_rings, None
 
     # Subtract each island (dilated by tool_radius) from the machinable
     # polygon and emit a finishing ring per island.
@@ -1254,9 +1265,9 @@ def _zigzag_strokes_and_finishing_ring(
                 )
 
     if not isinstance(machinable, Polygon) or machinable.is_empty:
-        return [], finishing_rings
+        return [], finishing_rings, None
     strokes = _generate_zigzag_strokes(machinable, stepover, angle_deg)
-    return strokes, finishing_rings
+    return strokes, finishing_rings, machinable
 
 
 def _generate_zigzag_strokes(
@@ -1385,6 +1396,7 @@ def _emit_zigzag(
     *,
     strokes: list[list[Segment]],
     finishing_rings: list[list[Segment]],
+    machinable: Polygon | None,
     tool_controller: ToolController,
     z_levels: list[float],
     safe_height: float,
@@ -1442,6 +1454,7 @@ def _emit_zigzag(
                     instructions,
                     strokes=strokes,
                     finishing_rings=finishing_rings,
+                    machinable=machinable,
                     ramp_config=ramp_config,
                     n_legs=n_legs,
                     prev_z=prev_z,
@@ -1454,6 +1467,7 @@ def _emit_zigzag(
                     instructions,
                     strokes=strokes,
                     finishing_rings=finishing_rings,
+                    machinable=machinable,
                     pass_z=z,
                     tool_controller=tool_controller,
                     clearance=clearance,
@@ -1543,6 +1557,7 @@ def _emit_zigzag_linear_pass_body(
     *,
     strokes: list[list[Segment]],
     finishing_rings: list[list[Segment]],
+    machinable: Polygon | None,
     ramp_config: RampConfig,
     n_legs: int,
     prev_z: float,
@@ -1660,6 +1675,7 @@ def _emit_zigzag_linear_pass_body(
         current_xy=strokes[0][-1].end,
         remaining_strokes=strokes[1:],
         finishing_rings=finishing_rings,
+        machinable=machinable,
         pass_z=pass_z,
         clearance=clearance,
         feed_xy=tool_controller.feed_xy,
@@ -1672,6 +1688,7 @@ def _emit_zigzag_plunge_pass_body(
     *,
     strokes: list[list[Segment]],
     finishing_rings: list[list[Segment]],
+    machinable: Polygon | None,
     pass_z: float,
     tool_controller: ToolController,
     clearance: float,
@@ -1688,11 +1705,67 @@ def _emit_zigzag_plunge_pass_body(
         current_xy=strokes[0][-1].end,
         remaining_strokes=strokes[1:],
         finishing_rings=finishing_rings,
+        machinable=machinable,
         pass_z=pass_z,
         clearance=clearance,
         feed_xy=tool_controller.feed_xy,
         feed_z=tool_controller.feed_z,
     )
+
+
+def _zigzag_connector_safe(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    machinable: Polygon | None,
+) -> bool:
+    """True if a straight feed from ``a`` to ``b`` stays inside the
+    machinable polygon — i.e. the connector doesn't cross an island.
+
+    Approach: sample the connector's midpoint against ``machinable``.
+    For typical zigzag geometry the connector is short (one stepover)
+    and both endpoints sit on the machinable boundary, so a midpoint
+    test is sufficient:
+
+    * Normal U-turn between adjacent scan rows — midpoint is ~½
+      stepover off the boundary, well inside ``machinable``. Safe.
+    * Multi-region connector across an island — midpoint lands inside
+      the subtracted island region, which is NOT part of
+      ``machinable``. Unsafe.
+
+    Returns True when ``machinable`` is None (no safety data available
+    — preserves the pre-fix behaviour rather than producing spurious
+    retracts; islandless pockets don't compute machinable for rapids).
+    Two coincident points are trivially safe.
+    """
+    if machinable is None:
+        return True
+    if a == b:
+        return True
+    midpoint = Point((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+    # Distance-based test rather than topological containment. Reasons:
+    #   - Normal U-turn midpoint sits on the machinable boundary;
+    #     `contains` rejects it (strict interior only).
+    #   - Finishing-ring transit jump between the polygonal shadow of
+    #     machinable (chord-approximated) and the analytical-arc ring
+    #     start can land ~chord_tolerance outside the shadow even
+    #     though the connector is safe — `covers` rejects that too.
+    #   - Island-crossing midpoint lands deep inside a hole (distance
+    #     ~½ island-width >> any realistic chord tolerance), which is
+    #     exactly the case we need to flag.
+    # The 0.1 mm slack threshold absorbs both boundary-incidence and
+    # chord-approximation drift while still rejecting any midpoint that
+    # actually enters an island. An island at least one tool-diameter
+    # across has midpoint distance ≥ half diameter, an order of
+    # magnitude past this threshold.
+    return float(machinable.distance(midpoint)) < _CONNECTOR_SAFE_SLACK_MM
+
+
+# Slack on the midpoint-inside-machinable test. Larger than any
+# realistic chord_tolerance (~0.02 mm default) so polygonal shadow
+# approximation doesn't cause spurious retracts; smaller by an order
+# of magnitude than the smallest plausible island width so real
+# island-crossings still trigger.
+_CONNECTOR_SAFE_SLACK_MM = 0.1
 
 
 def _emit_zigzag_remainder(
@@ -1701,27 +1774,49 @@ def _emit_zigzag_remainder(
     current_xy: tuple[float, float],
     remaining_strokes: list[list[Segment]],
     finishing_rings: list[list[Segment]],
+    machinable: Polygon | None,
     pass_z: float,
     clearance: float,
     feed_xy: float,
     feed_z: float,
 ) -> None:
-    """Emit strokes after the first (each connected to the previous by a
-    feed move — true zigzag), then trace each finishing ring. The
-    BOUNDARY ring (index 0) connects via feed-at-depth from the last
-    stroke; ISLAND rings (index 1+) are reached via retract → rapid →
-    plunge so the tool doesn't drag through uncut island material.
-    Each ring is rotated so its traversal starts near the previous
-    end to keep the transit short.
+    """Emit strokes after the first, then trace each finishing ring.
+
+    Between successive strokes:
+
+    * Normal zigzag — the connector is a short U-turn along the stepover,
+      entirely inside the machinable polygon. Emit as a feed at cut depth.
+    * Multi-region — when a scan line is clipped into multiple disjoint
+      pieces by an island, the connector from one piece's end to the next
+      piece's start crosses the island. Detect by testing the connector's
+      midpoint against ``machinable``: if the midpoint isn't inside, the
+      line leaves safe territory. Substitute retract → rapid → plunge so
+      the tool goes over the island rather than through it.
+
+    The BOUNDARY finishing ring (index 0) connects via feed-at-depth
+    from the last stroke (same safety check applies); ISLAND rings
+    (index 1+) are always reached via retract → rapid → plunge.
     """
     tool_xy = current_xy
     for stroke in remaining_strokes:
         start = stroke[0].start
-        instructions.append(
-            IRInstruction(
-                type=MoveType.FEED, x=start[0], y=start[1], f=feed_xy
+        if _zigzag_connector_safe(tool_xy, start, machinable):
+            instructions.append(
+                IRInstruction(
+                    type=MoveType.FEED, x=start[0], y=start[1], f=feed_xy
+                )
             )
-        )
+        else:
+            # Connector would cross an island — lift out, rapid across,
+            # plunge back down. Same pattern as an inter-island ring
+            # transition below.
+            instructions.append(IRInstruction(type=MoveType.RAPID, z=clearance))
+            instructions.append(
+                IRInstruction(type=MoveType.RAPID, x=start[0], y=start[1])
+            )
+            instructions.append(
+                IRInstruction(type=MoveType.FEED, z=pass_z, f=feed_z)
+            )
         for seg in stroke:
             _emit_segment(instructions, seg, feed_xy)
         tool_xy = stroke[-1].end
@@ -1730,7 +1825,9 @@ def _emit_zigzag_remainder(
             continue
         rotated = _rotate_ring_start_to_nearest(ring, tool_xy)
         ring_start = rotated[0].start
-        if ring_index == 0:
+        if ring_index == 0 and _zigzag_connector_safe(
+            tool_xy, ring_start, machinable
+        ):
             instructions.append(
                 IRInstruction(
                     type=MoveType.FEED,

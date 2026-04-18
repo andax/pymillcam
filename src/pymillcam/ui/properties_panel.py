@@ -419,7 +419,13 @@ class _PocketForm(OperationFormBase):
         super().__init__(parent)
         self.name = QLineEdit()
         self.strategy = QComboBox()
-        self.strategy.addItems([s.value for s in PocketStrategy])
+        # SPIRAL is defined in the enum but not implemented — hide it from
+        # the dropdown so the user can't select a strategy whose preview
+        # misleadingly shows OFFSET rings while generation raises. Drop
+        # the filter when SPIRAL lands.
+        self.strategy.addItems(
+            [s.value for s in PocketStrategy if s is not PocketStrategy.SPIRAL]
+        )
         self.direction = QComboBox()
         self.direction.addItems([d.value for d in MillingDirection])
         self.tool_diameter = QDoubleSpinBox()

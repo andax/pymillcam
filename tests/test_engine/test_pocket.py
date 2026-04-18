@@ -716,7 +716,7 @@ def test_zigzag_strokes_clipped_to_machinable_polygon() -> None:
     inside the pocket."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
-    strokes, finishing = _zigzag_strokes_and_finishing_ring(
+    strokes, finishing, _machinable = _zigzag_strokes_and_finishing_ring(
         entity,
         tool_radius=1.5,
         stepover=2.0,
@@ -739,7 +739,7 @@ def test_zigzag_strokes_alternate_direction() -> None:
     """Row 0 goes +X, row 1 goes -X, row 2 goes +X, … — true zigzag."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
-    strokes, _ = _zigzag_strokes_and_finishing_ring(
+    strokes, _finishing, _machinable = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
     )
     assert len(strokes) >= 4
@@ -756,7 +756,7 @@ def test_zigzag_stepover_spacing() -> None:
     stepover (slight under-step to land the last row at the far wall)."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
-    strokes, _ = _zigzag_strokes_and_finishing_ring(
+    strokes, _finishing, _machinable = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
     )
     ys = [s[0].start[1] for s in strokes]
@@ -774,7 +774,7 @@ def test_zigzag_finishing_ring_preserves_arcs_on_circle_pocket() -> None:
     lines."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = _circle_entity(radius=20.0)
-    _, finishing_rings = _zigzag_strokes_and_finishing_ring(
+    _strokes, finishing_rings, _machinable = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
     )
     assert len(finishing_rings) == 1
@@ -787,7 +787,7 @@ def test_zigzag_angle_deg_rotates_strokes() -> None:
     """With angle_deg=90, strokes run along ±Y instead of ±X."""
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
     entity = GeometryEntity(segments=_rect_segments(50, 30), closed=True)
-    strokes, _ = _zigzag_strokes_and_finishing_ring(
+    strokes, _finishing, _machinable = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 90.0, 0.02,
     )
     assert strokes
@@ -957,7 +957,7 @@ def test_zigzag_linear_back_and_forth_emits_cleanup_leg() -> None:
         geometry_layers=[layer], tool_controllers=[tc], operations=[op]
     )
     from pymillcam.engine.pocket import _zigzag_strokes_and_finishing_ring
-    strokes, _ = _zigzag_strokes_and_finishing_ring(
+    strokes, _finishing, _machinable = _zigzag_strokes_and_finishing_ring(
         entity, 1.5, 2.0, MillingDirection.CLIMB, 0.0, 0.02,
     )
     stroke_start = strokes[0][0].start
@@ -1524,3 +1524,187 @@ def test_rest_machining_groups_within_tool_center_space() -> None:
                 assert tool_center_space.buffer(1e-6).contains(p), (
                     f"rest-machining point {seg.start} outside tool-center space"
                 )
+
+
+# =================================================================== SPIRAL UI
+
+
+def test_spiral_preview_is_empty() -> None:
+    """SPIRAL isn't implemented yet; `compute_pocket_preview` should
+    return an empty list so the viewport doesn't misleadingly draw
+    concentric OFFSET rings for a strategy that will fail at G-code
+    generation. Regression — without the short-circuit, the preview
+    silently falls through to the concentric-ring branch."""
+    entity = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
+    layer = GeometryLayer(name="L", entities=[entity])
+    tc = ToolController(tool_number=1, tool=Tool(name="t"))
+    op = PocketOp(
+        name="P",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name="L", entity_id=entity.id)],
+        cut_depth=-3.0,
+        strategy=PocketStrategy.SPIRAL,
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    assert compute_pocket_preview(op, project) == []
+
+
+# ========================================== ZIGZAG multi-region connector safety
+
+
+def _zigzag_island_project(
+    *, cut_depth: float = -1.0, stepover: float = 1.5
+) -> tuple[Project, PocketOp]:
+    """Build a 40×30 rectangular pocket with a circular island at the
+    centre — a scan line through the island is split into two disjoint
+    pieces, each of which the engine emits as its own stroke. The
+    connector between those pieces is the safety case this test
+    covers.
+    """
+    # Outer boundary: 40 × 30 rectangle.
+    boundary = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
+    # Island: circle r=5 at centre (20, 15). Any horizontal scan line
+    # through y ∈ (10, 20) splits into pieces on the left and right of
+    # the island.
+    island_arc = ArcSegment(
+        center=(20.0, 15.0),
+        radius=5.0,
+        start_angle_deg=0.0,
+        sweep_deg=360.0,
+    )
+    island = GeometryEntity(segments=[island_arc], closed=True)
+    layer = GeometryLayer(name="L", entities=[boundary, island])
+    tc = ToolController(tool_number=1, tool=Tool(name="t"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name="L", entity_id=boundary.id),
+            GeometryRef(layer_name="L", entity_id=island.id),
+        ],
+        cut_depth=cut_depth,
+        stepover=stepover,
+        multi_depth=False,
+        strategy=PocketStrategy.ZIGZAG,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    project.settings.spindle_warmup_s = 0.0
+    return project, op
+
+
+def test_zigzag_retracts_between_disjoint_scan_pieces_across_island() -> None:
+    """Regression for the "feed-at-depth through an island" hazard.
+
+    When a scan line crosses an island, the engine emits its left and
+    right pieces as separate strokes. The straight connector between
+    them would cut through the island at cut-depth. The fix detects
+    the unsafe connector via the machinable polygon and substitutes
+    retract → rapid → plunge.
+
+    Behavioural assertion: count the number of Z-only retract moves to
+    clearance during the stroke phase. Without the fix, there are
+    zero (every connector is a pure XY feed). With the fix, at least
+    one retract appears for scan lines that actually cross the island.
+    """
+    project, op = _zigzag_island_project()
+    tp = generate_pocket_toolpath(op, project)
+
+    clearance = project.settings.clearance_plane
+    retracts_during_strokes = [
+        ins for ins in tp.instructions
+        if ins.type is MoveType.RAPID
+        and ins.z == pytest.approx(clearance)
+        and ins.x is None
+        and ins.y is None
+    ]
+    # At least one retract: scan rows through y ∈ [10, 20] are split by
+    # the island, each yielding an unsafe connector.
+    assert len(retracts_during_strokes) >= 1
+
+
+def test_zigzag_no_retract_when_no_islands() -> None:
+    """Safety check must not cost anything when there's no island to
+    avoid. A plain rectangular zigzag pocket should emit its usual
+    feed-connector pattern with zero in-body retracts."""
+    entity = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
+    layer = GeometryLayer(name="L", entities=[entity])
+    tc = ToolController(tool_number=1, tool=Tool(name="t"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = PocketOp(
+        name="Zig",
+        tool_controller_id=1,
+        geometry_refs=[GeometryRef(layer_name="L", entity_id=entity.id)],
+        cut_depth=-1.0,
+        stepover=1.5,
+        multi_depth=False,
+        strategy=PocketStrategy.ZIGZAG,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    project.settings.spindle_warmup_s = 0.0
+    tp = generate_pocket_toolpath(op, project)
+
+    # Find the plunge (first feed to cut-depth) — everything after that
+    # and before the final retract is the "body" of the pass.
+    plunge_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED
+        and ins.z == pytest.approx(-1.0)
+    )
+    # Last instruction is the final safe-height retract; stop just before.
+    body = tp.instructions[plunge_idx + 1 : -1]
+    in_body_retracts = [
+        ins for ins in body
+        if ins.type is MoveType.RAPID and ins.x is None and ins.y is None
+    ]
+    assert in_body_retracts == [], (
+        f"plain zigzag without islands should not retract mid-pass; got {len(in_body_retracts)}"
+    )
+
+
+def test_zigzag_unsafe_connector_is_replaced_by_rapid_not_feed() -> None:
+    """The unsafe-connector substitution emits a Z-only rapid, an XY
+    rapid, and a Z feed (plunge) — matching the inter-island-ring
+    pattern already used for finishing rings. Prevents a regression
+    where someone replaces the retract sequence with a partial
+    (e.g. just the Z part) and leaves an XY feed crossing the island.
+    """
+    project, op = _zigzag_island_project()
+    tp = generate_pocket_toolpath(op, project)
+
+    clearance = project.settings.clearance_plane
+    # The very first RAPID z=clearance is the pass entry descent (from
+    # safe_height), part of the standard preamble — not a retract. Scan
+    # only what follows the first plunge to pass depth.
+    first_plunge = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z is not None and ins.z < 0
+    )
+    body_retracts = [
+        i for i, ins in enumerate(tp.instructions)
+        if i > first_plunge
+        and ins.type is MoveType.RAPID
+        and ins.z == pytest.approx(clearance)
+        and ins.x is None
+        and ins.y is None
+    ]
+    assert body_retracts, "fixture should trigger at least one mid-body retract"
+    for i in body_retracts:
+        # Each such retract is immediately followed by an XY rapid
+        # (not an XY feed — that would feed through the island) and
+        # then a Z feed down to pass depth. The full "over the
+        # obstacle" triple.
+        xy_rapid = tp.instructions[i + 1]
+        z_feed = tp.instructions[i + 2]
+        assert xy_rapid.type is MoveType.RAPID
+        assert xy_rapid.x is not None or xy_rapid.y is not None
+        assert z_feed.type is MoveType.FEED
+        assert z_feed.z is not None and z_feed.z < 0

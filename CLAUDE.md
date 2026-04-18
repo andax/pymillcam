@@ -122,9 +122,16 @@ Phase 2 progress (ongoing):
   portability; between-hole traversal stays at clearance, inter-op
   travel uses safe_height. First op added via the April 2026 facade
   architecture — zero dispatch changes in MainWindow.
-- Pocket SPIRAL — not yet. The preview currently falls through to
-  concentric rings (misleading) and G-code generation raises; the
-  combobox still offers it. Hide or implement; either way is fine.
+- Pocket SPIRAL — not yet. The preview returns empty (matches the
+  generation-time refusal) and the Properties-panel strategy dropdown
+  filters it out, so the UI no longer lies about it. Drop both
+  safeguards when an actual spiral implementation lands.
+- ✅ ZIGZAG multi-region connector safety (April 2026) — connectors
+  between consecutive strokes now test the midpoint against the
+  machinable polygon; unsafe connectors (those crossing into an
+  island) retract+rapid+plunge instead of feed-at-depth. Uses a
+  0.1 mm distance slack so chord-approximation artefacts don't
+  trigger spurious retracts.
 - Tool library, machine definitions (macros wired through to the post)
   — not yet.
 
@@ -154,13 +161,9 @@ Pocket islands known limitations:
   - OFFSET with islands uses Shapely buffer (chord-discretized), not
     the analytical arc-preserving offsetter. Arc preservation is
     deferred until the analytical offsetter learns about holes.
-  - ZIGZAG strokes that get split by an island into multiple disjoint
-    pieces still use feed-at-depth between pieces (the old multi-region
-    safety hole). Use OFFSET for pockets where this would crash the
-    cutter into an island.
   - ZIGZAG does not participate in rest-machining; residuals there have
-    a different shape (stroke-clipped) and are best tackled alongside
-    the multi-region connector safety fix.
+    a different shape (stroke-clipped) and are best tackled the next
+    time someone is in that code path.
   - Large residuals get a single cleanup ring, which may not fully
     cover the interior if the residual is wider than ~2·tool_radius.
     Small V-notch corners (the main case) are cleared; revisit if a
