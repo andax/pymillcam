@@ -307,6 +307,12 @@ class MainWindow(QMainWindow):
         self._action_add_drill.setShortcut("Ctrl+D")
         self._action_add_drill.setEnabled(False)
         self._action_add_drill.triggered.connect(self._on_add_drill)
+        self._action_duplicate_operation = QAction("D&uplicate operation", self)
+        self._action_duplicate_operation.setShortcut("Ctrl+Shift+D")
+        self._action_duplicate_operation.setEnabled(False)
+        self._action_duplicate_operation.triggered.connect(
+            self._on_duplicate_operation
+        )
         self._action_delete_operation = QAction("&Delete operation", self)
         self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
         self._action_delete_operation.setEnabled(False)
@@ -328,6 +334,7 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_add_profile)
         ops_menu.addAction(self._action_add_pocket)
         ops_menu.addAction(self._action_add_drill)
+        ops_menu.addAction(self._action_duplicate_operation)
         ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_to_op)
@@ -434,9 +441,9 @@ class MainWindow(QMainWindow):
         self._action_add_drill.setEnabled(bool(self._viewport.selection))
         # "Join paths" needs ≥ 2 selected entities to be meaningful.
         self._action_join_paths.setEnabled(len(self._viewport.selection) >= 2)
-        self._action_delete_operation.setEnabled(
-            self._currently_selected_operation() is not None
-        )
+        has_selected_op = self._currently_selected_operation() is not None
+        self._action_delete_operation.setEnabled(has_selected_op)
+        self._action_duplicate_operation.setEnabled(has_selected_op)
         # Add/Remove-from-active-op need both an active op AND a non-empty
         # viewport selection.
         active_op = self._currently_selected_operation()
@@ -1037,6 +1044,77 @@ class MainWindow(QMainWindow):
             project.operations = [o for o in project.operations if o.id != target_id]
 
         self._do_action("Delete operation", mutate)
+
+    def _on_duplicate_operation(self) -> None:
+        """Clone the currently-selected op.
+
+        Primary use cases:
+          * Multi-step drilling — spot / pilot / final cycles on the
+            same set of holes without re-picking the geometry.
+          * Roughing + finishing of the same profile or pocket with
+            different stepdowns / feeds.
+
+        Each duplicate gets:
+          * A fresh ``op.id``.
+          * A fresh ``ToolController`` (copied from the original so
+            the starting point is the same tool + feeds, but with a
+            new ``tool_number`` and fresh ``tool.id`` — the user can
+            then switch it via the Tool dropdown without affecting
+            the original op).
+          * The same geometry_refs (references the same entities;
+            editing either op's geometry assignment separately is the
+            Phase 2 "edit op geometry" path, not this one).
+
+        The duplicate is appended to the end of ``project.operations``
+        and selected in the tree so the user can start editing it
+        immediately.
+        """
+        from uuid import uuid4
+
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        source_tc = self._tool_controller_for(op)
+        new_op_id_box: list[str] = []
+
+        def mutate(project: Project) -> None:
+            # Copy the tool controller first so we have its number to
+            # point the duplicated op at. ``tool_controller_id`` on an
+            # op is an int (the tool_number) — we don't want the
+            # duplicate silently sharing the original's controller.
+            next_tc_number = (
+                max(
+                    (tc.tool_number for tc in project.tool_controllers),
+                    default=0,
+                ) + 1
+            )
+            if source_tc is not None:
+                new_tc = source_tc.model_copy(
+                    deep=True, update={"tool_number": next_tc_number}
+                )
+                new_tc.tool.id = uuid4().hex
+                project.tool_controllers.append(new_tc)
+            else:
+                # Original had no ToolController resolved — synthesise
+                # a library-default one, same as Add-op.
+                new_tc = self._create_tool_controller_for(project)
+                project.tool_controllers.append(new_tc)
+
+            # Now the op itself. ``model_copy(deep=True)`` handles
+            # geometry_refs (list of pydantic models) cleanly.
+            new_op = op.model_copy(
+                deep=True,
+                update={
+                    "id": uuid4().hex,
+                    "tool_controller_id": new_tc.tool_number,
+                },
+            )
+            project.operations.append(new_op)
+            new_op_id_box.append(new_op.id)
+
+        self._do_action("Duplicate operation", mutate)
+        if new_op_id_box:
+            self._select_operation_in_tree(new_op_id_box[0])
 
     def _create_tool_controller_for(self, project: Project) -> ToolController:
         """Create a new ToolController for a freshly-added op.

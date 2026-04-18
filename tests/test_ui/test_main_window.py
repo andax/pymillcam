@@ -477,6 +477,123 @@ def test_new_project_inherits_chord_tolerance_from_preferences(
     assert fresh.settings.chord_tolerance == pytest.approx(0.005)
 
 
+# ----------------------------------------------------- duplicate operation
+
+
+def _make_one_profile_op(main_window: MainWindow) -> tuple[Project, GeometryEntity]:
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+    return main_window.project, entity
+
+
+def test_duplicate_operation_action_disabled_when_no_op_selected(
+    main_window: MainWindow,
+) -> None:
+    main_window.set_project(Project())
+    assert not main_window._action_duplicate_operation.isEnabled()
+
+
+def test_duplicate_operation_action_enabled_when_op_selected(
+    main_window: MainWindow,
+) -> None:
+    _make_one_profile_op(main_window)
+    op_id = main_window.project.operations[0].id
+    main_window._select_operation_in_tree(op_id)
+    assert main_window._action_duplicate_operation.isEnabled()
+
+
+def test_duplicate_operation_appends_a_new_op(main_window: MainWindow) -> None:
+    _make_one_profile_op(main_window)
+    op_id = main_window.project.operations[0].id
+    main_window._select_operation_in_tree(op_id)
+
+    main_window._action_duplicate_operation.trigger()
+
+    assert len(main_window.project.operations) == 2
+
+
+def test_duplicate_preserves_fields_but_fresh_id(
+    main_window: MainWindow,
+) -> None:
+    """Duplicate carries forward every field the user set except the
+    op.id (distinct identity) and tool_controller_id (fresh TC)."""
+    _make_one_profile_op(main_window)
+    original = main_window.project.operations[0]
+    # Tweak the original so we can tell they're real copies rather than
+    # both reset to defaults.
+    original.cut_depth = -7.25
+    main_window._select_operation_in_tree(original.id)
+
+    main_window._action_duplicate_operation.trigger()
+
+    duplicate = main_window.project.operations[1]
+    assert duplicate.id != original.id
+    assert duplicate.name == original.name  # user renames in Properties if desired
+    assert duplicate.cut_depth == pytest.approx(-7.25)
+    assert [
+        (ref.layer_name, ref.entity_id) for ref in duplicate.geometry_refs
+    ] == [
+        (ref.layer_name, ref.entity_id) for ref in original.geometry_refs
+    ]
+
+
+def test_duplicate_gets_its_own_tool_controller(main_window: MainWindow) -> None:
+    """The duplicate's ToolController is a fresh clone with a new
+    tool_number — not a shared reference. So editing the duplicate's
+    diameter / feeds in Properties doesn't mutate the original's
+    tool, matching the "each op gets its own tool" convention that
+    Add-op already follows."""
+    _make_one_profile_op(main_window)
+    original = main_window.project.operations[0]
+    original_tc = next(
+        tc for tc in main_window.project.tool_controllers
+        if tc.tool_number == original.tool_controller_id
+    )
+    main_window._select_operation_in_tree(original.id)
+    main_window._action_duplicate_operation.trigger()
+
+    duplicate = main_window.project.operations[1]
+    dup_tc = next(
+        tc for tc in main_window.project.tool_controllers
+        if tc.tool_number == duplicate.tool_controller_id
+    )
+    assert dup_tc.tool_number != original_tc.tool_number
+    assert dup_tc.tool.id != original_tc.tool.id
+    # Mutate the duplicate's tool; original's tool stays unchanged.
+    dup_tc.tool.geometry["diameter"] = 99.0
+    assert original_tc.tool.geometry["diameter"] != 99.0
+
+
+def test_duplicate_selects_the_new_op_in_the_tree(
+    main_window: MainWindow,
+) -> None:
+    _make_one_profile_op(main_window)
+    original = main_window.project.operations[0]
+    main_window._select_operation_in_tree(original.id)
+
+    main_window._action_duplicate_operation.trigger()
+
+    # Selection advanced to the newly-created op so the user can
+    # start editing it immediately.
+    duplicate = main_window.project.operations[1]
+    assert main_window._currently_selected_operation() is duplicate
+
+
+def test_undo_duplicate_removes_the_copy(main_window: MainWindow) -> None:
+    _make_one_profile_op(main_window)
+    original = main_window.project.operations[0]
+    main_window._select_operation_in_tree(original.id)
+    main_window._action_duplicate_operation.trigger()
+    assert len(main_window.project.operations) == 2
+
+    main_window._action_undo.trigger()
+
+    assert len(main_window.project.operations) == 1
+    assert main_window.project.operations[0].id == original.id
+
+
 def test_add_profile_uses_tool_diameter_from_preferences(
     main_window: MainWindow,
 ) -> None:
