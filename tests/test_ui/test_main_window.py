@@ -1210,6 +1210,150 @@ def test_entity_menu_shows_add_only_for_non_member(
     assert to_remove == []
 
 
+# ----------------------------- unified entity context menu
+
+
+def _entity_menu_labels(
+    main_window: MainWindow,
+    seed: tuple[str, str],
+    multi_target: list[tuple[str, str]],
+) -> list[str]:
+    """Build the unified entity context menu and return its action
+    labels (Qt separators excluded). Doesn't exec — tests can inspect
+    what the user would see without the menu blocking."""
+    from PySide6.QtWidgets import QMenu
+
+    seed_entity = main_window._find_entity(*seed)
+    assert seed_entity is not None
+    active_op = main_window._currently_selected_operation()
+    menu = QMenu(main_window)
+    main_window._add_similar_actions(menu, seed, seed_entity)
+    if active_op is not None:
+        main_window._add_op_member_actions(menu, active_op, multi_target)
+    return [
+        a.text() for a in menu.actions() if not a.isSeparator()
+    ]
+
+
+def test_entity_menu_offers_select_similar_even_on_tree_right_click(
+    main_window: MainWindow,
+) -> None:
+    """Tree right-click now shares the same menu as the viewport — so
+    Select Similar is available from the tree too (previously only
+    the viewport offered it)."""
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    # No op selected — only Select Similar should appear.
+    labels = _entity_menu_labels(main_window, ("L", a.id), [("L", a.id)])
+    assert "Select similar: same type" in labels
+    assert "Select similar: same layer" in labels
+    assert "Select similar: same diameter" in labels
+
+
+def test_entity_menu_hides_diameter_for_non_circle_seed(
+    main_window: MainWindow,
+) -> None:
+    """Select-similar-by-diameter only makes sense for full-circle
+    seeds. Non-circle entities shouldn't see a greyed-out entry —
+    the whole point of the unification was dynamic, actionable
+    menus only."""
+    from pymillcam.core.geometry import GeometryEntity, GeometryLayer
+    from pymillcam.core.segments import LineSegment
+
+    line_entity = GeometryEntity(
+        segments=[LineSegment(start=(0, 0), end=(10, 0))], closed=False,
+    )
+    project = Project(
+        geometry_layers=[GeometryLayer(name="L", entities=[line_entity])]
+    )
+    main_window.set_project(project)
+
+    labels = _entity_menu_labels(
+        main_window, ("L", line_entity.id), [("L", line_entity.id)]
+    )
+    assert "Select similar: same diameter" not in labels
+    # The generally-applicable similars still appear.
+    assert "Select similar: same type" in labels
+
+
+def test_entity_menu_combines_similar_and_op_actions(
+    main_window: MainWindow,
+) -> None:
+    """With an active op AND a seed that isn't in it, the menu shows
+    Select Similar *and* an Add-to-op entry — no grey-outs, no
+    omissions of actions that apply."""
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Seed = b (not in op). Menu should have both similar and Add.
+    labels = _entity_menu_labels(main_window, ("L", b.id), [("L", b.id)])
+    assert any("Select similar" in lab for lab in labels)
+    assert "Add to active operation" in labels
+    assert "Remove from active operation" not in labels
+
+
+def test_entity_menu_replaces_add_with_remove_for_member(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Seed = a (in op). Menu should have Remove but not Add.
+    labels = _entity_menu_labels(main_window, ("L", a.id), [("L", a.id)])
+    assert "Remove from active operation" in labels
+    assert "Add to active operation" not in labels
+
+
+def test_entity_menu_multi_target_uses_counts(
+    main_window: MainWindow,
+) -> None:
+    """Multi-entity labels include the count so the user sees exactly
+    how many refs each action will touch — especially useful on mixed
+    selections where both Add and Remove show."""
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Mixed: a is in op, b is not.
+    labels = _entity_menu_labels(
+        main_window, ("L", a.id), [("L", a.id), ("L", b.id)]
+    )
+    # Both actions, each with a "1" prefix telling the user how many
+    # refs the specific action will actually touch.
+    assert "Add 1 to active operation" in labels
+    assert "Remove 1 from active operation" in labels
+
+
+def test_viewport_right_click_without_hit_or_selection_yields_no_menu(
+    main_window: MainWindow,
+) -> None:
+    """The viewport path needs a seed to build anything. With the
+    cursor over empty space and no selection, the context-menu
+    handler should simply return — no empty menu, no greyed-out
+    entries."""
+    project, _a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    # Ensure no selection + hit-test misses by passing a position
+    # guaranteed to be off every entity in world space (far-corner).
+    # The handler returns silently — asserted via the absence of a
+    # raised exception / side effect.
+    from PySide6.QtCore import QPointF
+
+    assert main_window._viewport.selection == []
+    main_window._on_viewport_context_menu(QPointF(-1e6, -1e6))
+
+
 # -------------------------------- op-row right-click targets that op
 
 

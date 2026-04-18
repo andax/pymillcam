@@ -867,16 +867,10 @@ class MainWindow(QMainWindow):
     def _on_tree_context_menu(self, position: QPoint) -> None:
         """Right-click in the tree → context menu by item type.
 
-        Entity rows get Add-to / Remove-from active operation (enabled
-        only when an op is currently selected). Operation rows get
-        Duplicate / Delete, a shortcut for the same-named menu-bar
-        actions.
-
-        Target of an Add/Remove: if the right-clicked entity is part
-        of the current tree selection, act on the whole selection
-        (same multi-select convention Qt uses for other file-manager-
-        style lists). Otherwise, act on just the right-clicked item —
-        the user's intent is clearest when right-click-and-act.
+        Entity rows route through the shared entity-menu builder so
+        the offered actions match what the viewport offers for the
+        same entity. Operation rows get the op-specific Duplicate /
+        Delete menu.
         """
         item = self._tree.itemAt(position)
         if item is None:
@@ -887,80 +881,139 @@ class MainWindow(QMainWindow):
         global_pos = self._tree.viewport().mapToGlobal(position)
 
         if ref[0] == "entity":
-            self._show_tree_entity_menu(ref, global_pos)
+            seed = (ref[1], ref[2])
+            tree_selection = self._tree_entity_selection()
+            multi_target = (
+                sorted(tree_selection) if seed in tree_selection else [seed]
+            )
+            self._exec_entity_context_menu(seed, multi_target, global_pos)
         elif ref[0] == "operation":
             self._show_tree_operation_menu(ref, global_pos)
 
-    def _show_tree_entity_menu(
-        self, right_clicked_ref: _TreeRef, global_pos: QPoint
+    def _exec_entity_context_menu(
+        self,
+        seed: tuple[str, str],
+        multi_target: list[tuple[str, str]],
+        global_pos: QPoint,
     ) -> None:
-        """Build and show the Add/Remove menu for an entity row.
+        """Build, exec, and dispatch the unified entity context menu.
 
-        Target-set rules (Qt file-manager convention):
-          * Right-clicked entity is part of the current tree entity
-            selection → act on the whole selection.
-          * Otherwise → act only on the right-clicked entity.
+        Shared by tree and viewport right-clicks so the user sees the
+        same choices regardless of where they clicked. Everything is
+        dynamic: an action only appears if it would actually do
+        something (no greyed-out entries). An empty menu never shows.
 
-        Menu-item filtering (the whole point of this round of polish):
-          * Hide ``Add`` when every target is already in the op.
-          * Hide ``Remove`` when no target is in the op.
-          * For a mixed multi-select, show both; the Add action
-            adds only the missing refs, Remove removes only the
-            present ones — counts appear in the labels so the user
-            sees what each action will do.
-
-        No active op → no menu. The user's first step has to be
-        picking an op via left-click; right-clicking an entity with
-        nothing to target would be misleading.
+        Arguments:
+          * ``seed`` — the single (layer, entity_id) identifying the
+            entity the user right-clicked *on*. Used by Select Similar
+            as the reference for matching.
+          * ``multi_target`` — the (layer, entity_id) set that
+            Add/Remove-to-op should operate on. Usually ``[seed]``, but
+            for multi-selection right-clicks (either the tree's entity
+            selection or the viewport's) it's the full selection so
+            batch Add/Remove works in one action.
+          * ``global_pos`` — where on the screen to exec the menu.
         """
-        _, layer_name, entity_id = right_clicked_ref
-        op = self._currently_selected_operation()
-        if op is None:
+        seed_entity = self._find_entity(*seed)
+        if seed_entity is None:
             return
-
-        selected_refs = self._tree_entity_selection()
-        if (layer_name, entity_id) in selected_refs:
-            targets = sorted(selected_refs)
-        else:
-            targets = [(layer_name, entity_id)]
-
-        op_members = {(r.layer_name, r.entity_id) for r in op.geometry_refs}
-        to_add = [r for r in targets if r not in op_members]
-        to_remove = [r for r in targets if r in op_members]
+        active_op = self._currently_selected_operation()
 
         menu = QMenu(self)
-        # Label varies on whether we're acting on one entity or many.
-        is_single = len(targets) == 1
-        act_add: QAction | None = None
-        act_remove: QAction | None = None
+        # Each action's ``data()`` holds a zero-arg callback that
+        # executes the action. Cleaner than a long if/elif chain after
+        # exec() and keeps the dispatch co-located with each action.
+        self._add_similar_actions(menu, seed, seed_entity)
+        if active_op is not None:
+            self._add_op_member_actions(menu, active_op, multi_target)
+
+        if menu.isEmpty():
+            return
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        callback = chosen.data()
+        if callable(callback):
+            callback()
+
+    def _add_similar_actions(
+        self,
+        menu: QMenu,
+        seed: tuple[str, str],
+        seed_entity: GeometryEntity,
+    ) -> None:
+        """Append ``Select similar: …`` entries that apply to the seed.
+
+        ``same type`` and ``same layer`` always make sense; ``same
+        diameter`` only for a full-circle seed, so non-circles don't
+        carry a greyed-out diameter entry.
+        """
+        act = menu.addAction("Select similar: same type")
+        act.setData(lambda: self._apply_select_similar(seed, SimilarityMode.SAME_TYPE))
+        act = menu.addAction("Select similar: same layer")
+        act.setData(lambda: self._apply_select_similar(seed, SimilarityMode.SAME_LAYER))
+        if full_circle_radius(seed_entity) is not None:
+            act = menu.addAction("Select similar: same diameter")
+            act.setData(
+                lambda: self._apply_select_similar(seed, SimilarityMode.SAME_DIAMETER)
+            )
+
+    def _add_op_member_actions(
+        self,
+        menu: QMenu,
+        op: Operation,
+        multi_target: list[tuple[str, str]],
+    ) -> None:
+        """Append Add/Remove-to-op entries, filtered by membership.
+
+        * All targets outside op → only ``Add`` (single-entity label
+          or ``Add N …`` when multi-target).
+        * All targets inside op → only ``Remove``.
+        * Mixed multi-target → both, each carrying the count of what
+          it'll actually act on.
+
+        If there's nothing to Add or Remove (shouldn't happen — every
+        target is one or the other), the section is simply omitted.
+        """
+        op_members = {(r.layer_name, r.entity_id) for r in op.geometry_refs}
+        to_add = [r for r in multi_target if r not in op_members]
+        to_remove = [r for r in multi_target if r in op_members]
+        if not to_add and not to_remove:
+            return
+        if not menu.isEmpty():
+            menu.addSeparator()
+        is_single = len(multi_target) == 1
         if to_add:
             label = (
                 "Add to active operation"
                 if is_single
                 else f"Add {len(to_add)} to active operation"
             )
-            act_add = menu.addAction(label)
+            act = menu.addAction(label)
+            add_refs = list(to_add)
+            act.setData(lambda: self._add_refs_to_op(op, add_refs))
         if to_remove:
             label = (
                 "Remove from active operation"
                 if is_single
                 else f"Remove {len(to_remove)} from active operation"
             )
-            act_remove = menu.addAction(label)
+            act = menu.addAction(label)
+            rem_refs = list(to_remove)
+            act.setData(lambda: self._remove_refs_from_op(op, rem_refs))
 
-        if menu.isEmpty():
-            # Shouldn't happen — every target is either in or out of op,
-            # so at least one of to_add / to_remove is non-empty. Guard
-            # anyway so we never exec a zero-action menu.
-            return
-
-        chosen = menu.exec(global_pos)
-        if chosen is None:
-            return
-        if chosen is act_add:
-            self._add_refs_to_op(op, to_add)
-        elif chosen is act_remove:
-            self._remove_refs_from_op(op, to_remove)
+    def _apply_select_similar(
+        self, seed: tuple[str, str], mode: SimilarityMode
+    ) -> None:
+        """Replace the viewport selection with every entity matching
+        ``seed`` under ``mode``. Re-emits ``selection_changed`` so the
+        tree-sync / action-state pipeline runs through the normal
+        path.
+        """
+        matches = find_similar_entities(seed[0], seed[1], self._project, mode)
+        self._viewport.set_selection(matches)
+        self._viewport.selection_changed.emit(matches)
+        self._viewport.update()
 
     def _show_tree_operation_menu(
         self, right_clicked_ref: _TreeRef, global_pos: QPoint
@@ -1003,53 +1056,35 @@ class MainWindow(QMainWindow):
         return selected
 
     def _on_viewport_context_menu(self, widget_pos: QPointF) -> None:
-        """Right-click in the viewport → build and show a Select-Similar menu.
+        """Right-click in the viewport → unified entity context menu.
 
-        The menu only makes sense with a single seed entity selected.
-        With zero selection we silently drop the request — there's
-        nothing to match against. With a multi-selection we also drop,
-        since "similar to what, exactly?" is ambiguous. A richer UX
-        (select similar to any of these; union of matches) is a future
-        enhancement.
+        Seed resolution, in order of preference:
+          1. The entity directly under the cursor (hit-test). Highest-
+             intent signal; matches "right-click what you mean".
+          2. If nothing is under the cursor but the user has exactly
+             one entity selected, use that (preserves the pre-unified
+             behaviour for users who've already clicked their target).
+          3. Otherwise no menu — ambiguous target, nothing to act on.
+
+        Multi-target for Add/Remove: if the seed is part of the
+        current viewport selection, act on the whole selection;
+        otherwise target only the seed.
         """
+        hit = self._viewport.hit_test_widget(widget_pos)
         selection = list(self._viewport.selection)
-        if len(selection) != 1:
-            return
-        seed_layer, seed_id = selection[0]
-        seed_entity = self._find_entity(seed_layer, seed_id)
-        if seed_entity is None:
-            return
-
-        menu = QMenu(self)
-        act_type = menu.addAction("Select similar: same type")
-        act_layer = menu.addAction("Select similar: same layer")
-        act_diameter = menu.addAction("Select similar: same diameter")
-        # Diameter matching only works from a full-circle seed.
-        act_diameter.setEnabled(full_circle_radius(seed_entity) is not None)
-
-        # Show the menu at the user's cursor (widget position mapped to
-        # global screen coords).
-        global_pos = self._viewport.mapToGlobal(widget_pos.toPoint())
-        chosen = menu.exec(global_pos)
-        if chosen is None:
-            return
-
-        if chosen is act_type:
-            mode = SimilarityMode.SAME_TYPE
-        elif chosen is act_layer:
-            mode = SimilarityMode.SAME_LAYER
-        elif chosen is act_diameter:
-            mode = SimilarityMode.SAME_DIAMETER
+        if hit is not None:
+            seed = hit
+        elif len(selection) == 1:
+            seed = selection[0]
         else:
             return
 
-        matches = find_similar_entities(seed_layer, seed_id, self._project, mode)
-        self._viewport.set_selection(matches)
-        # Emit the same signal the user-driven box-select would so the
-        # tree-sync / action-state plumbing runs exactly once, through
-        # the normal path.
-        self._viewport.selection_changed.emit(matches)
-        self._viewport.update()
+        multi_target = (
+            selection if seed in selection and len(selection) > 1 else [seed]
+        )
+
+        global_pos = self._viewport.mapToGlobal(widget_pos.toPoint())
+        self._exec_entity_context_menu(seed, multi_target, global_pos)
 
     def _find_entity(
         self, layer_name: str, entity_id: str

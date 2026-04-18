@@ -278,6 +278,20 @@ class Viewport(QWidget):
     def scale(self) -> float:
         return self._scale
 
+    def hit_test_widget(
+        self, widget_pos: QPointF
+    ) -> tuple[str, str] | None:
+        """Return (layer_name, entity_id) of the entity at ``widget_pos``, or None.
+
+        Public counterpart to ``_hit_test`` that takes a widget-space
+        position and does the world-space conversion internally — what
+        every UI-side caller actually wants when handling a click.
+        """
+        layer, entity = self._hit_test(self.widget_to_world(widget_pos))
+        if layer is None or entity is None:
+            return None
+        return (layer, entity)
+
     def _hit_test(
         self, world_point: tuple[float, float]
     ) -> tuple[str | None, str | None]:
