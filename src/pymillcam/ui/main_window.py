@@ -14,13 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QStyle,
@@ -49,6 +50,11 @@ from pymillcam.core.preferences import (
     save_preferences,
 )
 from pymillcam.core.project import Project, ProjectSettings
+from pymillcam.core.selection import (
+    SimilarityMode,
+    find_similar_entities,
+    full_circle_radius,
+)
 from pymillcam.core.tool_library import (
     ToolLibrary,
     ToolLibraryLoadError,
@@ -152,6 +158,9 @@ class MainWindow(QMainWindow):
         self._viewport = Viewport(self)
         self._viewport.setObjectName("viewport")
         self._viewport.selection_changed.connect(self._on_viewport_selection_changed)
+        self._viewport.context_menu_requested.connect(
+            self._on_viewport_context_menu
+        )
         self.setCentralWidget(self._viewport)
 
     def _build_tree_dock(self) -> None:
@@ -745,6 +754,64 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_selection = False
         self._refresh_action_state()
+
+    def _on_viewport_context_menu(self, widget_pos: QPointF) -> None:
+        """Right-click in the viewport → build and show a Select-Similar menu.
+
+        The menu only makes sense with a single seed entity selected.
+        With zero selection we silently drop the request — there's
+        nothing to match against. With a multi-selection we also drop,
+        since "similar to what, exactly?" is ambiguous. A richer UX
+        (select similar to any of these; union of matches) is a future
+        enhancement.
+        """
+        selection = list(self._viewport.selection)
+        if len(selection) != 1:
+            return
+        seed_layer, seed_id = selection[0]
+        seed_entity = self._find_entity(seed_layer, seed_id)
+        if seed_entity is None:
+            return
+
+        menu = QMenu(self)
+        act_type = menu.addAction("Select similar: same type")
+        act_layer = menu.addAction("Select similar: same layer")
+        act_diameter = menu.addAction("Select similar: same diameter")
+        # Diameter matching only works from a full-circle seed.
+        act_diameter.setEnabled(full_circle_radius(seed_entity) is not None)
+
+        # Show the menu at the user's cursor (widget position mapped to
+        # global screen coords).
+        global_pos = self._viewport.mapToGlobal(widget_pos.toPoint())
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+
+        if chosen is act_type:
+            mode = SimilarityMode.SAME_TYPE
+        elif chosen is act_layer:
+            mode = SimilarityMode.SAME_LAYER
+        elif chosen is act_diameter:
+            mode = SimilarityMode.SAME_DIAMETER
+        else:
+            return
+
+        matches = find_similar_entities(seed_layer, seed_id, self._project, mode)
+        self._viewport.set_selection(matches)
+        # Emit the same signal the user-driven box-select would so the
+        # tree-sync / action-state plumbing runs exactly once, through
+        # the normal path.
+        self._viewport.selection_changed.emit(matches)
+        self._viewport.update()
+
+    def _find_entity(
+        self, layer_name: str, entity_id: str
+    ) -> GeometryEntity | None:
+        for layer in self._project.geometry_layers:
+            if layer.name != layer_name:
+                continue
+            return layer.find_entity(entity_id)
+        return None
 
     def _find_entity_item(
         self, layer_name: str, entity_id: str

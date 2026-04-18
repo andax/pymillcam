@@ -405,3 +405,29 @@ def test_mouse_position_signal_fires_on_move(viewport: Viewport, qtbot: QtBot) -
             Qt.KeyboardModifier.NoModifier,
         )
         viewport.mouseMoveEvent(event)
+
+
+def test_right_click_emits_context_menu_requested(
+    viewport: Viewport, qtbot: QtBot
+) -> None:
+    """Right-click should fire ``context_menu_requested`` with the
+    widget-space position, so MainWindow can build a context menu
+    with project-specific actions (Select Similar, etc.)."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    with qtbot.waitSignal(viewport.context_menu_requested, timeout=500) as sig:
+        event = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress,
+            QPointF(42, 17),
+            viewport.mapToGlobal(QPoint(42, 17)),
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        viewport.mousePressEvent(event)
+
+    # Payload carries the widget-space position, not the global one.
+    (emitted_pos,) = sig.args
+    assert emitted_pos.x() == pytest.approx(42)
+    assert emitted_pos.y() == pytest.approx(17)

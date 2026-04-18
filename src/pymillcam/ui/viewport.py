@@ -141,6 +141,11 @@ class Viewport(QWidget):
     # Payload is the new selection: a list of (layer_name, entity_id) tuples,
     # possibly empty.
     selection_changed = Signal(list)
+    # Emitted when the user requests a context menu (right-click). Payload
+    # is the widget-space position where MainWindow should exec the menu.
+    # The viewport itself doesn't know what actions belong in the menu —
+    # that depends on project state — so the parent owns the QMenu.
+    context_menu_requested = Signal(QPointF)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -610,6 +615,15 @@ class Viewport(QWidget):
             self._left_press_widget = QPointF(event.position())
             self._dragging_box = False
             self._drag_current_widget = None
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            # Emit and let the parent (MainWindow) build + show the menu.
+            # We pass the widget-space position so the caller can
+            # ``mapToGlobal`` it. Accept so the event doesn't propagate
+            # to the default contextMenuEvent path (avoids duplicate
+            # menu trigger).
+            self.context_menu_requested.emit(QPointF(event.position()))
             event.accept()
             return
         super().mousePressEvent(event)
