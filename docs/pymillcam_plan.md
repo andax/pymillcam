@@ -634,103 +634,137 @@ When the application launches (or when no project is open), a startup page is sh
 
 ## 7. Package Structure
 
-The Python project follows a src-layout with clear separation between engine, UI, and data.
+The Python project follows a src-layout with clear separation between engine, UI, and data. The tree below reflects the **current** repository as of April 2026; files tagged **[planned]** don't exist yet and are on the roadmap below.
 
 ```
 pymillcam/
 ├── pyproject.toml
 ├── README.md
+├── CLAUDE.md                        # Project brief / architecture notes
 ├── src/
 │   └── pymillcam/
 │       ├── __init__.py
 │       ├── __main__.py              # Entry point
 │       │
 │       ├── core/                    # Layer 1: Data Model
-│       │   ├── project.py           #   Project, Stock, Settings
-│       │   ├── geometry.py          #   GeometryLayer, entity types
-│       │   ├── operations.py        #   Operation base + subtypes
-│       │   ├── tools.py             #   Tool, ToolController
-│       │   ├── machine.py           #   MachineDefinition
-│       │   ├── fixtures.py          #   FixtureSetup, Clamp
-│       │   ├── materials.py         #   MaterialDatabase
-│       │   └── preferences.py       #   AppPreferences
+│       │   ├── commands.py          #   Snapshot-based undo/redo stack
+│       │   ├── containment.py       #   Polygon containment tree → pocket regions
+│       │   ├── geometry.py          #   GeometryLayer + GeometryEntity (segment-first)
+│       │   ├── machine.py           #   MachineDefinition (partial — macros unconsumed)
+│       │   ├── offsetter.py         #   Analytical arc-preserving offset
+│       │   ├── operations.py        #   Operation base + ProfileOp / PocketOp / DrillOp
+│       │   ├── path_stitching.py    #   Weld chains by shared endpoint (tolerance)
+│       │   ├── preferences.py       #   AppPreferences (stitch tolerance, edit coalesce)
+│       │   ├── project.py           #   Project, Stock, ProjectSettings, OperationUnion
+│       │   ├── segments.py          #   LineSegment, ArcSegment, Segment type union
+│       │   ├── tools.py             #   Tool, ToolController, CuttingData
+│       │   ├── fixtures.py          #   FixtureSetup, Clamp                    [planned]
+│       │   └── materials.py         #   MaterialDatabase                       [planned]
 │       │
 │       ├── engine/                  # Layer 2: Toolpath Engine
-│       │   ├── ir.py                #   Intermediate representation
-│       │   ├── profile.py           #   Profile toolpath generation
-│       │   ├── pocket.py            #   Pocket strategies
-│       │   ├── drill.py             #   Drill cycles
-│       │   ├── engrave.py           #   Engrave and V-carve
-│       │   ├── surface.py           #   Surface/facing
-│       │   ├── patterns.py          #   Pattern generators
-│       │   ├── tabs.py              #   Tab generation logic
-│       │   ├── validation.py        #   Safety checks (Z stack etc.)
-│       │   ├── feeds_speeds.py      #   Feed/speed calculator
-│       │   ├── time_estimate.py     #   Operation time estimation
-│       │   ├── nesting.py           #   Part nesting / layout
-│       │   └── optimizer.py         #   Toolpath optimization / TSP
+│       │   ├── common.py            #   Shared resolvers, chain walkers, IR emit
+│       │   ├── drill.py             #   Simple / peck / chip-break drill cycles
+│       │   ├── ir.py                #   IRInstruction + Toolpath dataclasses
+│       │   ├── ir_walker.py         #   IR → XY moves for viewport overlay
+│       │   ├── pocket.py            #   OFFSET + ZIGZAG strategies, rest-machining
+│       │   ├── profile.py           #   Profile toolpath (offsets, leads, ramp, tabs)
+│       │   ├── services.py          #   ToolpathService facade + op-type registry
+│       │   ├── tabs.py              #   Tab plateau placement + Z modulation
+│       │   ├── engrave.py           #   Engrave and V-carve                    [planned]
+│       │   ├── surface.py           #   Surface/facing                         [planned]
+│       │   ├── patterns.py          #   Pattern generators                     [planned]
+│       │   ├── validation.py        #   Z stack + travel + fixture checks      [planned]
+│       │   ├── feeds_speeds.py      #   Feed/speed calculator                  [planned]
+│       │   ├── time_estimate.py     #   Operation time estimation              [planned]
+│       │   ├── nesting.py           #   Part nesting / layout                  [planned]
+│       │   └── optimizer.py         #   Toolpath optimization / TSP            [planned]
 │       │
 │       ├── post/                    # Layer 3: Post-Processors
 │       │   ├── base.py              #   PostProcessor protocol
 │       │   ├── uccnc.py             #   UCCNC post-processor
-│       │   ├── mach3.py             #   Mach3 post-processor
-│       │   ├── grbl.py              #   GRBL post-processor
-│       │   └── linuxcnc.py          #   LinuxCNC post-processor
+│       │   ├── mach3.py             #   Mach3 post-processor                   [planned]
+│       │   ├── grbl.py              #   GRBL post-processor                    [planned]
+│       │   └── linuxcnc.py          #   LinuxCNC post-processor                [planned]
 │       │
 │       ├── io/                      # Import/Export
-│       │   ├── dxf_import.py        #   DXF file import
-│       │   ├── svg_import.py        #   SVG file import (future)
-│       │   ├── tool_import.py       #   FreeCAD .fctb/.fctl import
-│       │   ├── linuxcnc_import.py   #   LinuxCNC tool table import
-│       │   └── project_io.py        #   Project save/load (JSON)
+│       │   ├── dxf_import.py        #   DXF file import (lines/arcs/circles/LWPOLYLINE bulges)
+│       │   ├── project_io.py        #   Project save/load (JSON, .pmc)
+│       │   ├── svg_import.py        #   SVG file import                        [planned]
+│       │   ├── tool_import.py       #   FreeCAD .fctb/.fctl import             [planned]
+│       │   └── linuxcnc_import.py   #   LinuxCNC tool table import             [planned]
 │       │
-│       ├── sim/                     # Built-in Simulator
-│       │   ├── toolpath_view.py     #   Static toolpath overlay
-│       │   ├── playback.py          #   Animated toolpath playback
-│       │   └── preflight.py         #   Pre-flight safety dashboard
+│       ├── sim/                     # Built-in Simulator                        [planned]
+│       │   ├── toolpath_view.py     #   Static toolpath overlay                [planned]
+│       │   ├── playback.py          #   Animated toolpath playback             [planned]
+│       │   └── preflight.py         #   Pre-flight safety dashboard            [planned]
 │       │
-│       ├── external/                # External Tools Integration
-│       │   ├── launcher.py          #   Tool launch + variable subst
-│       │   └── autodetect.py        #   Auto-detect installed tools
+│       ├── external/                # External Tools Integration                [planned]
+│       │   ├── launcher.py          #   Tool launch + variable subst           [planned]
+│       │   └── autodetect.py        #   Auto-detect installed tools            [planned]
 │       │
 │       └── ui/                      # PySide6 GUI
-│           ├── main_window.py       #   Main window, menus, toolbar
-│           ├── startup_page.py      #   Startup / recent projects
-│           ├── viewport.py          #   2D graphics viewport
-│           ├── ops_tree.py          #   Operations tree widget
-│           ├── properties.py        #   Properties panel
-│           ├── z_stack_view.py      #   Z stack side-view widget
-│           ├── tool_library_ui.py   #   Tool library manager
-│           ├── machine_setup_ui.py  #   Machine setup dialog
-│           ├── external_tools_ui.py #   External tools preferences
-│           ├── simulator_ui.py      #   Playback controls + dashboard
-│           ├── measurement_ui.py    #   Viewport measurement tools
-│           ├── feeds_speeds_ui.py   #   Contextual feed/speed panel
-│           ├── nesting_ui.py        #   Nesting dialog + preview
-│           ├── tool_renderer.py     #   Parametric tool profile graphics
-│           ├── gcode_preview.py     #   G-code viewer with viewport link
-│           ├── wizards/             #   Wizard dialogs
-│           │   ├── profile_wizard.py
-│           │   ├── pocket_wizard.py
-│           │   ├── drill_wizard.py
-│           │   ├── multi_step_drill_wizard.py
-│           │   ├── surface_wizard.py
-│           │   ├── engrave_wizard.py
-│           │   ├── nesting_wizard.py
-│           │   └── tile_wizard.py
-│           └── resources/           #   Icons, stylesheets
+│           ├── box_selection.py     #   Directional box-select + rubber-band
+│           ├── main_window.py       #   Main window, menus, toolbar, command stack
+│           ├── preferences_dialog.py #  Stitch / edit-coalesce preferences dialog
+│           ├── properties_panel.py  #   OperationFormBase + FORM_REGISTRY
+│           ├── viewport.py          #   2D viewport (chord-polyline arcs, overlays)
+│           ├── wizards/
+│           │   ├── base.py          #   BaseWizard + BaseWizardPage + OperationFormPage
+│           │   ├── profile_wizard.py          [planned]
+│           │   ├── pocket_wizard.py           [planned]
+│           │   ├── drill_wizard.py            [planned]
+│           │   ├── multi_step_drill_wizard.py [planned]
+│           │   ├── surface_wizard.py          [planned]
+│           │   ├── engrave_wizard.py          [planned]
+│           │   ├── nesting_wizard.py          [planned]
+│           │   └── tile_wizard.py             [planned]
+│           ├── resources/           #   Icons, stylesheets (placeholder)
+│           ├── startup_page.py      #   Startup / recent projects              [planned]
+│           ├── ops_tree.py          #   Operations tree widget (in main_window today)   [planned]
+│           ├── z_stack_view.py      #   Z stack side-view widget               [planned]
+│           ├── tool_library_ui.py   #   Tool library manager                   [planned]
+│           ├── machine_setup_ui.py  #   Machine setup dialog                   [planned]
+│           ├── external_tools_ui.py #   External tools preferences             [planned]
+│           ├── simulator_ui.py      #   Playback controls + dashboard          [planned]
+│           ├── measurement_ui.py    #   Viewport measurement tools             [planned]
+│           ├── feeds_speeds_ui.py   #   Contextual feed/speed panel            [planned]
+│           ├── nesting_ui.py        #   Nesting dialog + preview               [planned]
+│           ├── tool_renderer.py     #   Parametric tool profile graphics       [planned]
+│           └── gcode_preview.py     #   G-code viewer with viewport link       [planned]
+│
+├── scripts/
+│   └── generate_gear_dxf.py         #   Regenerate tests/fixtures/dxf/gear_profile.dxf
 │
 ├── tests/
-│   ├── test_core/
-│   ├── test_engine/
-│   ├── test_post/
-│   └── test_io/
+│   ├── fixtures/
+│   │   └── dxf/                     #   Stress-test fixtures (V-notch, ZIGZAG
+│   │                                #   multi-region, gear, enclosure, ...)
+│   ├── test_core/                   #   Commands, containment, geometry, offsetter,
+│   │                                #   operations, path-stitching, preferences,
+│   │                                #   project, segments
+│   ├── test_engine/                 #   common, drill, ir_walker, pocket, profile,
+│   │                                #   services, tabs
+│   ├── test_io/                     #   dxf_import, project_io
+│   ├── test_post/                   #   uccnc
+│   └── test_ui/                     #   box_selection, main_window, preferences_dialog,
+│                                    #   properties_panel, viewport, viewport_arc_rendering,
+│                                    #   wizards_base
 │
-└── data/                        # Shipped defaults
-    ├── machines/                #   Example machine configs
-    ├── tools/                   #   Example tool library
-    ├── materials/               #   Default materials DB
-    └── post/                    #   Post-processor configs
+├── docs/
+│   ├── pymillcam_plan.md            #   This document
+│   └── pymillcam_test_plan.md
+│
+├── examples/                        # User-facing sample projects
+│   ├── 50mm_circle.dxf
+│   ├── motor_section_wall.dxf
+│   ├── circle_cutout.pmc
+│   └── README.md
+│
+└── data/                            # Shipped defaults (directories in place; contents [planned])
+    ├── machines/                    #   Example machine configs
+    ├── tools/                       #   Example tool library
+    ├── materials/                   #   Default materials DB
+    └── post/                        #   Post-processor configs
 ```
 
 ---
@@ -814,7 +848,18 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
     junctions share widget pixels exactly; no hairline gaps on dense
     geometry.
 - Pocket SPIRAL strategy
-- Drill operation (simple and peck cycles)
+- ✅ Drill operation — ``DrillOp`` model with three cycle types:
+  **SIMPLE** (G81-equivalent: plunge to depth, retract), **PECK**
+  (G83-equivalent: full retract between pecks for chip clearance),
+  **CHIP_BREAK** (G73-equivalent: small in-hole retract to snap the
+  chip). POINT entities and closed arcs / circles both work as drill
+  targets — the engine resolves closed contours to their centre
+  (exact for full-circle arcs, Shapely centroid otherwise). Expanded
+  G0/G1 IR (not canned cycles) for post-processor portability. First
+  real op added through the April 2026 facade architecture —
+  ``MainWindow`` never learned a new op type; ``engine/drill.py``
+  registers itself with ``ToolpathService`` and
+  ``@register_form(DrillOp)`` plugs a form into the Properties panel.
 - Edit op geometry refs after creation (currently refs are set at
   Add-Op time and not editable; viewport should highlight an op's
   refs and offer Add-to-active-op / Remove-from-active-op actions)

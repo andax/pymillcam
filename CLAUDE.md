@@ -23,8 +23,8 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `common.py` — `EngineError` base + shared helpers used by every op type: cascade resolvers (`resolve_tool_controller`, `resolve_entity`, `resolve_stepdown`, `resolve_chord_tolerance`, `resolve_safe_height`, `resolve_clearance`), pass planning (`z_levels`), chain walkers (`chain_is_ccw`, `split_chain_at_length`, `walk_closed_chain`), tangent helpers, and IR-emit primitives (`emit_segment`, `emit_ramp_segments`). Every raising helper takes an `error_cls` so `profile.py` keeps raising `ProfileGenerationError` and `pocket.py` raises `PocketGenerationError` — both subclass `EngineError`, so the UI catches once.
 - `services.py` — `ToolpathService` facade. Dispatches `(op, project)` to preview / toolpath / program generation by op type via a registry (`register_preview`, `register_toolpath`). The UI talks to this, not to individual engine modules. New op types (drill, surface, engrave, …) register themselves — `MainWindow` never dispatches by op type.
 - `profile.py` — Profile toolpath (offsets, lead-in/out, ramp entry, tabs, multi-depth)
-- `pocket.py` — Pocket strategies (zigzag, spiral, offset-based, ramp entry)
-- `drill.py` — Drill cycles (simple, peck, chip-break) — not yet
+- `pocket.py` — Pocket strategies (offset, zigzag — spiral reserved, ramp entry with fallback chain)
+- `drill.py` — Drill cycles (SIMPLE / PECK / CHIP_BREAK). Point-driven; resolves POINT entities, full-circle arcs, and closed contours to drill coordinates. Emits expanded G0/G1 IR (not canned G81/G83) for post-processor portability.
 - `engrave.py` — Engrave and V-carve — not yet
 - `surface.py` — Surface/facing — not yet
 - `patterns.py` — Pattern generators (rect grid, hex grid, circular array, text) — not yet
@@ -116,8 +116,17 @@ Phase 2 progress (ongoing):
   `PocketOp.rest_machining` (default True). The main iteration also
   filters pinch-off noise polygons (area < `(10·chord_tolerance)²`) so
   they don't pollute the swept-area model.
-- Pocket SPIRAL — not yet.
-- Drill, tool library, machine definitions — not yet.
+- ✅ Drill operation (April 2026) — three cycle types (SIMPLE / PECK
+  / CHIP_BREAK). Accepts POINT entities and closed circles / contours
+  (engine resolves to centre). Emits expanded G0/G1 for post-processor
+  portability; between-hole traversal stays at clearance, inter-op
+  travel uses safe_height. First op added via the April 2026 facade
+  architecture — zero dispatch changes in MainWindow.
+- Pocket SPIRAL — not yet. The preview currently falls through to
+  concentric rings (misleading) and G-code generation raises; the
+  combobox still offers it. Hide or implement; either way is fine.
+- Tool library, machine definitions (macros wired through to the post)
+  — not yet.
 
 Infrastructure / architecture refactors (April 2026 — prep for Phase 3):
 - ✅ `engine/common.py` extracted. ~280 lines of shared cascade / chain /
