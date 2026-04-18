@@ -27,7 +27,7 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `common.py` — `EngineError` base + shared helpers used by every op type: cascade resolvers (`resolve_tool_controller`, `resolve_entity`, `resolve_stepdown`, `resolve_chord_tolerance`, `resolve_safe_height`, `resolve_clearance`), pass planning (`z_levels`), chain walkers (`chain_is_ccw`, `split_chain_at_length`, `walk_closed_chain`), tangent helpers, and IR-emit primitives (`emit_segment`, `emit_ramp_segments`). Every raising helper takes an `error_cls` so `profile.py` keeps raising `ProfileGenerationError` and `pocket.py` raises `PocketGenerationError` — both subclass `EngineError`, so the UI catches once.
 - `services.py` — `ToolpathService` facade. Dispatches `(op, project)` to preview / toolpath / program generation by op type via a registry (`register_preview`, `register_toolpath`). The UI talks to this, not to individual engine modules. New op types (drill, surface, engrave, …) register themselves — `MainWindow` never dispatches by op type.
 - `profile.py` — Profile toolpath (offsets, lead-in/out, ramp entry, tabs, multi-depth)
-- `pocket.py` — Pocket strategies (offset, zigzag — spiral reserved, ramp entry with fallback chain)
+- `pocket/` — Pocket strategies as a subpackage: `__init__.py` dispatches on `op.strategy`, `offset.py` has concentric rings + ramp/helix emit, `zigzag.py` has raster strokes + finishing rings + multi-region connector safety, `rest_machining.py` is the V-notch cleanup pass (OFFSET only), `_shared.py` holds cross-strategy helpers (offset-or-buffer primitive, ring-orientation, ring-chain emit). SPIRAL reserved.
 - `drill.py` — Drill cycles (SIMPLE / PECK / CHIP_BREAK). Point-driven; resolves POINT entities, full-circle arcs, and closed contours to drill coordinates. Emits expanded G0/G1 IR (not canned G81/G83) for post-processor portability.
 - `engrave.py` — Engrave and V-carve — not yet
 - `surface.py` — Surface/facing — not yet
@@ -245,12 +245,13 @@ Phase 1). Per-op override via the Properties panel.
 - Property-edit coalescing window is a hardcoded 400 ms in
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.
-- `engine/pocket.py` is still one ~1800-line file. The cross-file
-  duplication with `profile.py` is gone (via `engine/common.py`), but
-  internal duplication between OFFSET and ZIGZAG dispatch stacks
-  remains. A subpackage split (`engine/pocket/{offset,zigzag,
-  rest_machining,_shared}.py`) is the planned next refactor; deferred
-  from the April 2026 series because it's mechanically large.
+- `engine/pocket/` is now a subpackage with strategy dispatch in
+  `__init__.py` delegating to `offset.py`, `zigzag.py`,
+  `rest_machining.py`, and `_shared.py`. Test imports of the
+  underscore-prefixed helpers (`_concentric_rings`,
+  `_concentric_rings_with_islands`, `_zigzag_strokes_and_finishing_ring`,
+  `_helix_fits`) remain stable via re-exports from the package's
+  `__init__.py`.
 
 ## Test fixtures
 `tests/fixtures/dxf/` holds hand-crafted and generated DXFs that each
