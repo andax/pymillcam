@@ -55,6 +55,13 @@ src = ["src", "tests"]
 # would break validation. Revisit if we adopt model_rebuild() broadly.
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
 
+[tool.ruff.lint.isort]
+# Collapse `from x import (a as _a,)` + `from x import (b as _b,)` back into
+# a single block. Without this, isort splits every aliased name onto its own
+# `from x import ...` line, which defeats the point of importing a helper
+# module by function.
+combine-as-imports = true
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

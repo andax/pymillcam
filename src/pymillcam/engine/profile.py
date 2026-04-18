@@ -37,9 +37,23 @@ from pymillcam.core.segments import (
     reverse_segment_chain,
     segments_to_shapely,
     split_full_circle,
-    split_segment_at_length,
 )
 from pymillcam.core.tools import ToolController
+from pymillcam.engine.common import (
+    LENGTH_EPSILON as _LENGTH_EPSILON,
+    EngineError,
+    chain_is_ccw as _chain_is_ccw,
+    emit_ramp_segments as _emit_ramp_segments,
+    emit_segment as _common_emit_segment,
+    resolve_entity as _common_resolve_entity,
+    resolve_stepdown as _resolve_stepdown,
+    resolve_tool_controller as _common_resolve_tool_controller,
+    split_chain_at_length as _split_chain_at_length,
+    unit_tangent_at_end as _common_unit_tangent_at_end,
+    unit_tangent_at_start as _common_unit_tangent_at_start,
+    walk_closed_chain as _walk_closed_chain,
+    z_levels as _z_levels,
+)
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
 from pymillcam.engine.tabs import (
     TabPlacementError,
@@ -49,12 +63,8 @@ from pymillcam.engine.tabs import (
     split_chain_at_lengths,
 )
 
-_LENGTH_EPSILON = 1e-9
 
-DEFAULT_STEPDOWN_MM = 1.0
-
-
-class ProfileGenerationError(Exception):
+class ProfileGenerationError(EngineError):
     """Raised when a ProfileOp cannot be converted into a toolpath."""
 
 
@@ -151,33 +161,17 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
 
 
 def _resolve_tool_controller(op: ProfileOp, project: Project) -> ToolController:
-    if op.tool_controller_id is None:
-        raise ProfileGenerationError(f"Operation {op.name!r} has no tool_controller_id set")
-    for tc in project.tool_controllers:
-        if tc.tool_number == op.tool_controller_id:
-            return tc
-    raise ProfileGenerationError(
-        f"Operation {op.name!r} references tool_controller_id={op.tool_controller_id}, "
-        f"which is not present in the project"
+    return _common_resolve_tool_controller(
+        op, project, error_cls=ProfileGenerationError
     )
 
 
-def _resolve_entity(layer_name: str, entity_id: str, project: Project) -> GeometryEntity:
-    for layer in project.geometry_layers:
-        if layer.name != layer_name:
-            continue
-        entity = layer.find_entity(entity_id)
-        if entity is not None:
-            return entity
-    raise ProfileGenerationError(f"Geometry {layer_name!r}/{entity_id!r} not found in project")
-
-
-def _resolve_stepdown(op: ProfileOp, tc: ToolController) -> float:
-    if op.stepdown is not None:
-        return op.stepdown
-    if tc.tool.cutting_data:
-        return next(iter(tc.tool.cutting_data.values())).stepdown
-    return DEFAULT_STEPDOWN_MM
+def _resolve_entity(
+    layer_name: str, entity_id: str, project: Project
+) -> GeometryEntity:
+    return _common_resolve_entity(
+        layer_name, entity_id, project, error_cls=ProfileGenerationError
+    )
 
 
 def _offset_contour(
@@ -718,82 +712,6 @@ def _emit_piece_with_z(
         )
 
 
-def _emit_ramp_segments(
-    instructions: list[IRInstruction],
-    segs: list[Segment],
-    *,
-    z_start: float,
-    z_end: float,
-    feed_xy: float,
-) -> None:
-    """Emit `segs` as feed moves with Z interpolated linearly by arc length —
-    z_start at segs[0].start and z_end at segs[-1].end."""
-    total = sum(s.length for s in segs)
-    if total <= _LENGTH_EPSILON:
-        return
-    accum = 0.0
-    for seg in segs:
-        accum += seg.length
-        z_here = z_start + (accum / total) * (z_end - z_start)
-        if isinstance(seg, LineSegment):
-            ex, ey = seg.end
-            instructions.append(IRInstruction(
-                type=MoveType.FEED, x=ex, y=ey, z=z_here, f=feed_xy,
-            ))
-        else:  # ArcSegment — emit as helical arc
-            sx, sy = seg.start
-            ex, ey = seg.end
-            cx, cy = seg.center
-            move_type = MoveType.ARC_CCW if seg.ccw else MoveType.ARC_CW
-            instructions.append(IRInstruction(
-                type=move_type, x=ex, y=ey, z=z_here,
-                i=cx - sx, j=cy - sy, f=feed_xy,
-            ))
-
-
-def _split_chain_at_length(
-    segments: list[Segment], length: float
-) -> tuple[list[Segment], list[Segment]]:
-    """Split a chain at arc-length `length` from start. Returns (first_part,
-    second_part)."""
-    first: list[Segment] = []
-    remaining = length
-    for i, seg in enumerate(segments):
-        if remaining <= _LENGTH_EPSILON:
-            return (first, list(segments[i:]))
-        if remaining >= seg.length - _LENGTH_EPSILON:
-            first.append(seg)
-            remaining -= seg.length
-            continue
-        seg_a, seg_b = split_segment_at_length(seg, remaining)
-        first.append(seg_a)
-        return (first, [seg_b, *segments[i + 1:]])
-    return (first, [])
-
-
-def _walk_closed_chain(
-    segments: list[Segment], start_offset: float, length: float
-) -> list[Segment]:
-    """Walk a closed-contour chain from `start_offset` forward by `length`,
-    wrapping around as needed. Returns the traversed (sub-)segments in order.
-    """
-    total = sum(s.length for s in segments)
-    if total <= _LENGTH_EPSILON or length <= _LENGTH_EPSILON:
-        return []
-    start_offset %= total
-    before, after = _split_chain_at_length(segments, start_offset)
-    loop = after + before  # One full loop of `segments`, rotated to start at `start_offset`.
-    full_loops = int(length // total)
-    residual = length - full_loops * total
-    walked: list[Segment] = []
-    for _ in range(full_loops):
-        walked.extend(loop)
-    if residual > _LENGTH_EPSILON:
-        residual_part, _ = _split_chain_at_length(loop, residual)
-        walked.extend(residual_part)
-    return walked
-
-
 def _build_lead_in(
     segments: list[Segment], config: LeadConfig, side: OffsetSide
 ) -> list[Segment]:
@@ -942,89 +860,17 @@ def _lead_air_normal(
     return left if ccw else right
 
 
-def _chain_is_ccw(segments: list[Segment]) -> bool:
-    """True if the closed chain's discretised polygon has CCW orientation.
-
-    Falls back to True when discretisation fails — callers should only use
-    this for closed chains where orientation is well-defined.
-    """
-    try:
-        shadow = segments_to_shapely(segments, closed=True, tolerance=0.5)
-    except ValueError:
-        return True
-    exterior = getattr(shadow, "exterior", None)
-    if exterior is None:
-        return True
-    return bool(exterior.is_ccw)
-
-
 def _unit_tangent_at_start(seg: Segment) -> tuple[float, float]:
-    """Unit tangent vector at seg.start, pointing in the direction of travel."""
-    if isinstance(seg, LineSegment):
-        sx, sy = seg.start
-        ex, ey = seg.end
-        dx, dy = ex - sx, ey - sy
-        length = math.hypot(dx, dy)
-        if length == 0:
-            raise ProfileGenerationError("Zero-length segment has no tangent")
-        return (dx / length, dy / length)
-    theta = math.radians(seg.start_angle_deg)
-    if seg.ccw:
-        return (-math.sin(theta), math.cos(theta))
-    return (math.sin(theta), -math.cos(theta))
+    return _common_unit_tangent_at_start(seg, error_cls=ProfileGenerationError)
 
 
 def _unit_tangent_at_end(seg: Segment) -> tuple[float, float]:
-    """Unit tangent vector at seg.end, pointing in the direction of travel."""
-    if isinstance(seg, LineSegment):
-        # Straight-line tangent is constant along the segment.
-        return _unit_tangent_at_start(seg)
-    theta = math.radians(seg.end_angle_deg)
-    if seg.ccw:
-        return (-math.sin(theta), math.cos(theta))
-    return (math.sin(theta), -math.cos(theta))
+    return _common_unit_tangent_at_end(seg, error_cls=ProfileGenerationError)
 
 
-def _emit_segment(instructions: list[IRInstruction], seg: Segment, feed_xy: float) -> None:
-    if isinstance(seg, ArcSegment) and seg.is_full_circle:
-        first, second = split_full_circle(seg)
-        _emit_segment(instructions, first, feed_xy)
-        _emit_segment(instructions, second, feed_xy)
-        return
-    if isinstance(seg, LineSegment):
-        ex, ey = seg.end
-        instructions.append(IRInstruction(type=MoveType.FEED, x=ex, y=ey, f=feed_xy))
-        return
-    if isinstance(seg, ArcSegment):
-        sx, sy = seg.start
-        ex, ey = seg.end
-        cx, cy = seg.center
-        move_type = MoveType.ARC_CCW if seg.ccw else MoveType.ARC_CW
-        instructions.append(
-            IRInstruction(
-                type=move_type,
-                x=ex,
-                y=ey,
-                i=cx - sx,
-                j=cy - sy,
-                f=feed_xy,
-            )
-        )
-        return
-    raise ProfileGenerationError(f"Unknown segment type: {type(seg).__name__}")
-
-
-def _z_levels(cut_depth: float, stepdown: float, multi_depth: bool) -> list[float]:
-    if cut_depth >= 0:
-        return []
-    if not multi_depth or stepdown <= 0:
-        return [cut_depth]
-    step = abs(stepdown)
-    levels: list[float] = []
-    z = 0.0
-    while z > cut_depth:
-        z -= step
-        if z < cut_depth:
-            z = cut_depth
-        levels.append(z)
-    return levels
+def _emit_segment(
+    instructions: list[IRInstruction], seg: Segment, feed_xy: float
+) -> None:
+    _common_emit_segment(
+        instructions, seg, feed_xy, error_cls=ProfileGenerationError
+    )

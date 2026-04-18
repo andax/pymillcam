@@ -18,8 +18,7 @@ from pathlib import Path
 
 import ezdxf
 from ezdxf.document import Drawing
-from ezdxf.entities import Arc, Circle, DXFEntity, Line, LWPolyline, Polyline
-from ezdxf.entities import Point as DxfPoint
+from ezdxf.entities import Arc, Circle, DXFEntity, Line, LWPolyline, Point as DxfPoint, Polyline
 
 from pymillcam.core.geometry import EntitySource, GeometryEntity, GeometryLayer
 from pymillcam.core.path_stitching import stitch_entities
