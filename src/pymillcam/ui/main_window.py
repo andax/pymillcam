@@ -34,8 +34,10 @@ from pymillcam.core.commands import CommandStack
 from pymillcam.core.containment import build_pocket_regions
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
 from pymillcam.core.operations import (
+    DrillOp,
     GeometryRef,
     OffsetSide,
+    Operation,
     PocketOp,
     ProfileOp,
 )
@@ -270,6 +272,10 @@ class MainWindow(QMainWindow):
         self._action_add_pocket.setShortcut("Ctrl+K")
         self._action_add_pocket.setEnabled(False)
         self._action_add_pocket.triggered.connect(self._on_add_pocket)
+        self._action_add_drill = QAction("Add &Drill", self)
+        self._action_add_drill.setShortcut("Ctrl+D")
+        self._action_add_drill.setEnabled(False)
+        self._action_add_drill.triggered.connect(self._on_add_drill)
         self._action_delete_operation = QAction("&Delete operation", self)
         self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
         self._action_delete_operation.setEnabled(False)
@@ -290,6 +296,7 @@ class MainWindow(QMainWindow):
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_profile)
         ops_menu.addAction(self._action_add_pocket)
+        ops_menu.addAction(self._action_add_drill)
         ops_menu.addAction(self._action_delete_operation)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_to_op)
@@ -393,6 +400,7 @@ class MainWindow(QMainWindow):
         # reject non-closed selections at generate time.)
         self._action_add_profile.setEnabled(bool(self._viewport.selection))
         self._action_add_pocket.setEnabled(bool(self._viewport.selection))
+        self._action_add_drill.setEnabled(bool(self._viewport.selection))
         # "Join paths" needs ≥ 2 selected entities to be meaningful.
         self._action_join_paths.setEnabled(len(self._viewport.selection) >= 2)
         self._action_delete_operation.setEnabled(
@@ -567,7 +575,7 @@ class MainWindow(QMainWindow):
         self._refresh_action_state()
 
     def _update_active_op_refs(
-        self, op: ProfileOp | PocketOp | None
+        self, op: Operation | None
     ) -> None:
         if op is None:
             self._viewport.set_active_op_refs([])
@@ -577,7 +585,7 @@ class MainWindow(QMainWindow):
         )
 
     def _update_operation_preview(
-        self, op: ProfileOp | PocketOp | None
+        self, op: Operation | None
     ) -> None:
         if op is None:
             self._viewport.clear_profile_preview()
@@ -596,7 +604,7 @@ class MainWindow(QMainWindow):
 
     def _find_operation(
         self, operation_id: str
-    ) -> ProfileOp | PocketOp | None:
+    ) -> Operation | None:
         return next(
             (op for op in self._project.operations if op.id == operation_id), None
         )
@@ -704,6 +712,36 @@ class MainWindow(QMainWindow):
         self._do_action(description, mutate)
         if len(new_op_ids) == 1:
             self._select_operation_in_tree(new_op_ids[0])
+
+    def _on_add_drill(self) -> None:
+        targets = list(self._viewport.selection)
+        if not targets:
+            return
+        new_op_id_box: list[str] = []
+
+        def mutate(project: Project) -> None:
+            # One DrillOp for the whole selection — matches the typical
+            # "drill these N holes with the same bit" intent. The engine
+            # resolves each GeometryRef to a drill point (POINT entity
+            # coordinate, closed-arc/circle centre, etc.).
+            tc = self._create_tool_controller_for(project)
+            project.tool_controllers.append(tc)
+            op = DrillOp(
+                name=f"Drill {len(project.operations) + 1}",
+                tool_controller_id=tc.tool_number,
+                cut_depth=-3.0,
+                geometry_refs=[
+                    GeometryRef(layer_name=layer_name, entity_id=entity_id)
+                    for layer_name, entity_id in targets
+                ],
+            )
+            project.operations.append(op)
+            new_op_id_box.append(op.id)
+
+        description = "Add Drill" if len(targets) == 1 else f"Add Drill ({len(targets)} holes)"
+        self._do_action(description, mutate)
+        if new_op_id_box:
+            self._select_operation_in_tree(new_op_id_box[0])
 
     def _on_add_pocket(self) -> None:
         targets = list(self._viewport.selection)
@@ -837,7 +875,7 @@ class MainWindow(QMainWindow):
         return ToolController(tool_number=next_number, tool=tool)
 
     def _tool_controller_for(
-        self, op: ProfileOp | PocketOp
+        self, op: Operation
     ) -> ToolController | None:
         if op.tool_controller_id is None:
             return None
@@ -906,7 +944,7 @@ class MainWindow(QMainWindow):
 
     def _currently_selected_operation(
         self,
-    ) -> ProfileOp | PocketOp | None:
+    ) -> Operation | None:
         for item in self._tree.selectedItems():
             ref: _TreeRef = item.data(0, Qt.ItemDataRole.UserRole)
             if ref and ref[0] == "operation":

@@ -7,13 +7,13 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from pymillcam.core.geometry import GeometryLayer
-from pymillcam.core.operations import PocketOp, ProfileOp
+from pymillcam.core.operations import DrillOp, PocketOp, ProfileOp
 from pymillcam.core.tools import ToolController
 
 # Pydantic v2 discriminated union — the `type` literal on each concrete
 # op tells the validator which class to reconstruct when loading JSON.
 OperationUnion = Annotated[
-    ProfileOp | PocketOp, Field(discriminator="type")
+    ProfileOp | PocketOp | DrillOp, Field(discriminator="type")
 ]
 
 

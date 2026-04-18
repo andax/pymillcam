@@ -9,6 +9,8 @@ import pytest
 from pytestqt.qtbot import QtBot
 
 from pymillcam.core.operations import (
+    DrillCycle,
+    DrillOp,
     LeadConfig,
     LeadStyle,
     MillingDirection,
@@ -281,6 +283,76 @@ def test_pocket_disabling_multi_depth_clears_stepdown(
     assert op.multi_depth is False
     assert op.stepdown is None
     assert not panel._pocket_form.stepdown.isEnabled()
+
+
+# ---------- DrillOp form --------------------------------------------------
+
+
+def test_setting_drill_op_shows_drill_form(panel: PropertiesPanel) -> None:
+    drill_form = panel.form_for(DrillOp)
+    panel.set_operation(DrillOp(name="D"))
+    assert panel._stack.currentWidget() is drill_form
+
+
+def test_drill_fields_populate_from_op(panel: PropertiesPanel) -> None:
+    op = DrillOp(
+        name="D",
+        cycle=DrillCycle.PECK,
+        cut_depth=-6.0,
+        peck_depth=1.5,
+        chip_break_retract=0.3,
+        dwell_at_bottom_s=0.2,
+    )
+    panel.set_operation(op)
+    form = panel.form_for(DrillOp)
+    assert form.name.text() == "D"
+    assert form.cycle.currentText() == "peck"
+    assert form.cut_depth.value() == pytest.approx(-6.0)
+    assert form.peck_depth_override.isChecked()
+    assert form.peck_depth.value() == pytest.approx(1.5)
+    assert form.chip_break_retract.value() == pytest.approx(0.3)
+    assert form.dwell_at_bottom.value() == pytest.approx(0.2)
+
+
+def test_drill_cycle_write_back_round_trips(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    op = DrillOp(name="D", cycle=DrillCycle.SIMPLE)
+    panel.set_operation(op)
+    form = panel.form_for(DrillOp)
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        form.cycle.setCurrentText("chip_break")
+    assert op.cycle is DrillCycle.CHIP_BREAK
+
+
+def test_peck_depth_disabled_for_simple_cycle(panel: PropertiesPanel) -> None:
+    """The peck-depth override fields make no sense for a simple cycle;
+    the form should grey them out so the user sees why."""
+    panel.set_operation(DrillOp(name="D", cycle=DrillCycle.SIMPLE))
+    form = panel.form_for(DrillOp)
+    assert not form.peck_depth_override.isEnabled()
+    assert not form.peck_depth.isEnabled()
+    # Chip-break retract only meaningful for CHIP_BREAK cycle.
+    assert not form.chip_break_retract.isEnabled()
+
+
+def test_chip_break_retract_enabled_only_for_chip_break_cycle(
+    panel: PropertiesPanel,
+) -> None:
+    panel.set_operation(DrillOp(name="D", cycle=DrillCycle.CHIP_BREAK))
+    assert panel.form_for(DrillOp).chip_break_retract.isEnabled()
+    panel.set_operation(DrillOp(name="D", cycle=DrillCycle.PECK))
+    assert not panel.form_for(DrillOp).chip_break_retract.isEnabled()
+
+
+def test_disabling_peck_override_sets_peck_depth_to_none(
+    panel: PropertiesPanel,
+) -> None:
+    op = DrillOp(name="D", cycle=DrillCycle.PECK, peck_depth=2.0)
+    panel.set_operation(op)
+    form = panel.form_for(DrillOp)
+    form.peck_depth_override.setChecked(False)
+    assert op.peck_depth is None
 
 
 def test_pocket_profile_signals_are_routed_by_type(

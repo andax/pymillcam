@@ -59,6 +59,22 @@ class PocketStrategy(StrEnum):
     SPIRAL = "spiral"
 
 
+class DrillCycle(StrEnum):
+    # SIMPLE = one plunge to final depth, retract to clearance. Analogous
+    # to G81 in standard G-code.
+    # PECK = drill in `peck_depth` increments, retract all the way to
+    # clearance between each peck so chips fully clear the flutes.
+    # Analogous to G83 (deep-hole drilling). Use on deep holes, soft
+    # material, or bits that clog easily.
+    # CHIP_BREAK = drill in `peck_depth` increments, retract by a small
+    # `chip_break_retract` between pecks — enough to break the chip but
+    # staying in the hole. Analogous to G73 (high-speed peck). Faster
+    # than PECK but leaves chips in the hole.
+    SIMPLE = "simple"
+    PECK = "peck"
+    CHIP_BREAK = "chip_break"
+
+
 class GeometryRef(BaseModel):
     """Reference to an entity within a specific GeometryLayer."""
     layer_name: str
@@ -171,3 +187,31 @@ class PocketOp(Operation):
     # corners where an island grows close to the boundary. OFFSET only;
     # ZIGZAG has a different residual pattern handled separately.
     rest_machining: bool = True
+
+
+class DrillOp(Operation):
+    """Point-driven drilling operation.
+
+    Selects ``POINT`` geometry entities (or closed circles — the engine
+    treats a full-circle / closed-loop entity's centre as the drill
+    point). Holes are drilled at each referenced point in selection
+    order; TSP re-ordering can be layered on later without changing this
+    model.
+
+    ``cut_depth`` is the target Z (negative) at the deepest part of the
+    hole — the cutter centre lands there regardless of tool-tip geometry
+    (no conical-tip compensation yet; revisit if tapered drills
+    surface as a real need).
+    """
+    type: Literal["drill"] = "drill"
+    cycle: DrillCycle = DrillCycle.SIMPLE
+    # Peck size for PECK / CHIP_BREAK. ``None`` falls back to a
+    # conservative default (1 mm) at generation time. Ignored for SIMPLE.
+    peck_depth: float | None = None
+    # How far to retract between pecks for CHIP_BREAK — small enough to
+    # stay in the hole (so the bit doesn't lose its guide), large enough
+    # to snap the chip. 0.5 mm is a common default.
+    chip_break_retract: float = 0.5
+    # Dwell (seconds) at bottom of each plunge. Helps chip break in
+    # through-holes and tougher materials. 0 = no dwell.
+    dwell_at_bottom_s: float = 0.0

@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from pymillcam.core.operations import Operation, PocketOp, ProfileOp
+from pymillcam.core.operations import DrillOp, Operation, PocketOp, ProfileOp
 from pymillcam.core.project import Project
 from pymillcam.core.segments import Segment
+from pymillcam.engine.drill import compute_drill_preview, generate_drill_toolpath
 from pymillcam.engine.ir import Toolpath
 from pymillcam.engine.pocket import compute_pocket_preview, generate_pocket_toolpath
 from pymillcam.engine.profile import (
@@ -56,8 +57,10 @@ class ToolpathService:
         """
         self.register_preview(ProfileOp, compute_profile_preview)
         self.register_preview(PocketOp, compute_pocket_preview)
+        self.register_preview(DrillOp, compute_drill_preview)
         self.register_toolpath(ProfileOp, generate_profile_toolpath)
         self.register_toolpath(PocketOp, generate_pocket_toolpath)
+        self.register_toolpath(DrillOp, generate_drill_toolpath)
 
     # ------------------------------------------------------------- registry
 

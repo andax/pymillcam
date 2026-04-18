@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from pymillcam.core.operations import (
+    DrillCycle,
+    DrillOp,
     LeadConfig,
     LeadStyle,
     MillingDirection,
@@ -538,6 +540,116 @@ class _PocketForm(OperationFormBase):
         op.rest_machining = self.rest_machining.isChecked()
         if tool_controller is not None:
             tool_controller.tool.geometry["diameter"] = self.tool_diameter.value()
+
+
+# ------------------------------------------------------------------ drill form
+
+
+@register_form(DrillOp)
+class _DrillForm(OperationFormBase):
+    """Form widgets + populate/write-back for DrillOp.
+
+    Peck-specific fields (``peck_depth``, ``chip_break_retract``) are
+    always visible but disabled for cycles that don't use them, so the
+    user sees why a given value is greyed out rather than having the
+    field disappear on cycle switch.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.name = QLineEdit()
+        self.cycle = QComboBox()
+        self.cycle.addItems([c.value for c in DrillCycle])
+        self.tool_diameter = QDoubleSpinBox()
+        self.tool_diameter.setRange(0.05, 100.0)
+        self.tool_diameter.setDecimals(3)
+        self.tool_diameter.setSingleStep(0.5)
+        self.tool_diameter.setSuffix(" mm")
+        self.cut_depth = QDoubleSpinBox()
+        self.cut_depth.setRange(-1000.0, 1000.0)
+        self.cut_depth.setDecimals(3)
+        self.cut_depth.setSingleStep(0.5)
+        self.cut_depth.setSuffix(" mm")
+        self.peck_depth_override = QCheckBox("Override default peck")
+        self.peck_depth = QDoubleSpinBox()
+        self.peck_depth.setRange(0.01, 100.0)
+        self.peck_depth.setDecimals(3)
+        self.peck_depth.setSingleStep(0.25)
+        self.peck_depth.setSuffix(" mm")
+        self.chip_break_retract = QDoubleSpinBox()
+        self.chip_break_retract.setRange(0.01, 10.0)
+        self.chip_break_retract.setDecimals(3)
+        self.chip_break_retract.setSingleStep(0.1)
+        self.chip_break_retract.setSuffix(" mm")
+        self.dwell_at_bottom = QDoubleSpinBox()
+        self.dwell_at_bottom.setRange(0.0, 60.0)
+        self.dwell_at_bottom.setDecimals(2)
+        self.dwell_at_bottom.setSingleStep(0.1)
+        self.dwell_at_bottom.setSuffix(" s")
+
+        form = QFormLayout(self)
+        form.addRow("Name", self.name)
+        form.addRow("Tool diameter", self.tool_diameter)
+        form.addRow("Cycle", self.cycle)
+        form.addRow("Cut depth", self.cut_depth)
+        form.addRow("Peck depth", self.peck_depth_override)
+        form.addRow("", self.peck_depth)
+        form.addRow("Chip-break retract", self.chip_break_retract)
+        form.addRow("Dwell at bottom", self.dwell_at_bottom)
+
+        self._wire(
+            self.name.textEdited,
+            self.cycle.currentTextChanged,
+            self.tool_diameter.valueChanged,
+            self.cut_depth.valueChanged,
+            self.peck_depth_override.toggled,
+            self.peck_depth.valueChanged,
+            self.chip_break_retract.valueChanged,
+            self.dwell_at_bottom.valueChanged,
+        )
+
+    def populate(
+        self, op: Operation, tool_controller: ToolController | None
+    ) -> None:
+        assert isinstance(op, DrillOp)
+        self.name.setText(op.name)
+        self.cycle.setCurrentText(op.cycle.value)
+        self.cut_depth.setValue(op.cut_depth)
+        override = op.peck_depth is not None
+        self.peck_depth_override.setChecked(override)
+        self.peck_depth.setValue(op.peck_depth if op.peck_depth is not None else 1.0)
+        self.chip_break_retract.setValue(op.chip_break_retract)
+        self.dwell_at_bottom.setValue(op.dwell_at_bottom_s)
+        self._update_cycle_dependent_enablement(op.cycle, override)
+        if tool_controller is not None:
+            diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
+            self.tool_diameter.setValue(diameter)
+            self.tool_diameter.setEnabled(True)
+        else:
+            self.tool_diameter.setEnabled(False)
+
+    def write_back(
+        self, op: Operation, tool_controller: ToolController | None
+    ) -> None:
+        assert isinstance(op, DrillOp)
+        op.name = self.name.text()
+        op.cycle = DrillCycle(self.cycle.currentText())
+        op.cut_depth = self.cut_depth.value()
+        override = self.peck_depth_override.isChecked()
+        op.peck_depth = self.peck_depth.value() if override else None
+        op.chip_break_retract = self.chip_break_retract.value()
+        op.dwell_at_bottom_s = self.dwell_at_bottom.value()
+        self._update_cycle_dependent_enablement(op.cycle, override)
+        if tool_controller is not None:
+            tool_controller.tool.geometry["diameter"] = self.tool_diameter.value()
+
+    def _update_cycle_dependent_enablement(
+        self, cycle: DrillCycle, peck_override: bool
+    ) -> None:
+        uses_peck = cycle in (DrillCycle.PECK, DrillCycle.CHIP_BREAK)
+        self.peck_depth_override.setEnabled(uses_peck)
+        self.peck_depth.setEnabled(uses_peck and peck_override)
+        self.chip_break_retract.setEnabled(cycle is DrillCycle.CHIP_BREAK)
 
 
 # ------------------------------------------------------------------- helpers
