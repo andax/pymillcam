@@ -19,18 +19,21 @@ Pure data layer using Pydantic models. No UI dependencies. Serializes to JSON.
 ### Layer 2: Toolpath Engine (`src/pymillcam/engine/`)
 Pure Python, no UI. Takes project model → produces IR (intermediate representation).
 - `ir.py` — IRInstruction dataclass (rapid, feed, arc_cw, arc_ccw, dwell, spindle_on, tool_change, etc.)
+- `ir_walker.py` — Translates IR back into XY move segments for the viewport's toolpath overlay.
+- `common.py` — `EngineError` base + shared helpers used by every op type: cascade resolvers (`resolve_tool_controller`, `resolve_entity`, `resolve_stepdown`, `resolve_chord_tolerance`, `resolve_safe_height`, `resolve_clearance`), pass planning (`z_levels`), chain walkers (`chain_is_ccw`, `split_chain_at_length`, `walk_closed_chain`), tangent helpers, and IR-emit primitives (`emit_segment`, `emit_ramp_segments`). Every raising helper takes an `error_cls` so `profile.py` keeps raising `ProfileGenerationError` and `pocket.py` raises `PocketGenerationError` — both subclass `EngineError`, so the UI catches once.
+- `services.py` — `ToolpathService` facade. Dispatches `(op, project)` to preview / toolpath / program generation by op type via a registry (`register_preview`, `register_toolpath`). The UI talks to this, not to individual engine modules. New op types (drill, surface, engrave, …) register themselves — `MainWindow` never dispatches by op type.
 - `profile.py` — Profile toolpath (offsets, lead-in/out, ramp entry, tabs, multi-depth)
 - `pocket.py` — Pocket strategies (zigzag, spiral, offset-based, ramp entry)
-- `drill.py` — Drill cycles (simple, peck, chip-break)
-- `engrave.py` — Engrave and V-carve
-- `surface.py` — Surface/facing
-- `patterns.py` — Pattern generators (rect grid, hex grid, circular array, text)
+- `drill.py` — Drill cycles (simple, peck, chip-break) — not yet
+- `engrave.py` — Engrave and V-carve — not yet
+- `surface.py` — Surface/facing — not yet
+- `patterns.py` — Pattern generators (rect grid, hex grid, circular array, text) — not yet
 - `tabs.py` — Tab generation (rectangular, triangular, thin-web)
-- `validation.py` — Z stack budget, travel limits, fixture collision checks
-- `feeds_speeds.py` — Feed/speed calculator
-- `time_estimate.py` — Operation time estimation
-- `nesting.py` — Part nesting / layout optimization
-- `optimizer.py` — Toolpath optimization (tool grouping, rapid minimization, drill TSP)
+- `validation.py` — Z stack budget, travel limits, fixture collision checks — not yet
+- `feeds_speeds.py` — Feed/speed calculator — not yet
+- `time_estimate.py` — Operation time estimation — not yet
+- `nesting.py` — Part nesting / layout optimization — not yet
+- `optimizer.py` — Toolpath optimization (tool grouping, rapid minimization, drill TSP) — not yet
 
 ### Layer 3: Post-Processors (`src/pymillcam/post/`)
 Transforms IR → G-code for specific controllers.
@@ -38,11 +41,12 @@ Transforms IR → G-code for specific controllers.
 - `uccnc.py`, `mach3.py`, `grbl.py`, `linuxcnc.py`
 
 ### UI Layer (`src/pymillcam/ui/`) — PySide6
-- Main window with toolbar, dockable panels
-- Operations tree (left), 2D viewport (center), properties panel (right)
-- Wizards as multi-step dialogs
-- Directional box selection (L→R = contained, R→L = crossing)
-- Select Similar (same diameter/layer/type)
+- `main_window.py` — Shell. Owns the `ToolpathService` instance; delegates all engine work through it (no `isinstance` chains on op type).
+- `viewport.py` — 2D viewport. Directional box selection (L→R = contained, R→L = crossing), pan/zoom/fit. Arcs render as chord polylines with sub-pixel chord sag (≤ 0.5 px), so adjacent arc junctions share exact widget pixels — no hairline gap.
+- `properties_panel.py` — Host + registry. `OperationFormBase` is the abstract per-op-type form; concrete forms register with `@register_form(OpType)` decorator. `PropertiesPanel` looks up the form for the bound op, binds, and listens to one `field_changed` signal. Adding a new op type = one form class + one decorator, no panel changes.
+- `wizards/base.py` — `BaseWizard(QWizard)` + `BaseWizardPage` scaffold. `OperationFormPage` reuses the same `OperationFormBase` widget that Properties uses, so forms are defined once and surface in both places.
+- `box_selection.py` — Selection-combine semantics + rubber-band rect.
+- Select Similar, operations tree, and related interactions live in `main_window.py`.
 
 ### Other Modules
 - `io/` — DXF import (ezdxf), SVG import, FreeCAD/LinuxCNC tool import, project save/load
@@ -115,6 +119,28 @@ Phase 2 progress (ongoing):
 - Pocket SPIRAL — not yet.
 - Drill, tool library, machine definitions — not yet.
 
+Infrastructure / architecture refactors (April 2026 — prep for Phase 3):
+- ✅ `engine/common.py` extracted. ~280 lines of shared cascade / chain /
+  IR-emit helpers that used to be duplicated line-for-line between
+  `profile.py` and `pocket.py`. Error classes now inherit from
+  `EngineError` — the UI catches once at `main_window`.
+- ✅ `engine/services.py::ToolpathService` — op-type dispatch registry
+  consumed by `main_window`. Preview and toolpath generation both go
+  through it. New op types register (`register_preview`,
+  `register_toolpath`); the UI doesn't enumerate types.
+- ✅ `ui/properties_panel.OperationFormBase` + `FORM_REGISTRY`. Each form
+  owns its widgets, populate/write-back, and signal wiring via
+  `self._wire(...)`. `PropertiesPanel` is generic; new op-type forms
+  plug in with `@register_form(OpType)`.
+- ✅ `ui/wizards/base.py` — `BaseWizard` runs `apply(project)` on each
+  page after Finish (not Cancel). `OperationFormPage` embeds an
+  `OperationFormBase` widget so wizards and Properties share one form
+  surface per op type.
+- ✅ `ui/viewport.py` arcs render as chord polylines (sub-pixel sag),
+  not `QPainter.drawArc` (1/16° int units) or `QPainterPath.arcTo`
+  (Bézier). Eliminates the hairline gap at adjacent-arc junctions on
+  dense geometry like gear teeth.
+
 Pocket islands known limitations:
   - OFFSET with islands uses Shapely buffer (chord-discretized), not
     the analytical arc-preserving offsetter. Arc preservation is
@@ -157,18 +183,39 @@ Phase 1). Per-op override via the Properties panel.
   pass after every DXF load. Both use `AppPreferences.stitch_tolerance_mm`.
   Conservative: a vertex shared by 3+ entities (Y/T-junction) is left
   unstitched.
+  - `stitch_entities` welds chains whose endpoints are within tolerance
+    but does NOT snap adjacent endpoints to a shared exact coordinate
+    when merging — so a hand-drawn DXF with, say, a 0.05 mm gap stitches
+    into "one chain" whose `segments[i].end != segments[i+1].start`.
+    Viewport rendering looks continuous now (chord-polyline fix), but
+    downstream tangent math (offsetter join classification, profile
+    lead anchors) sees a tiny discontinuity. Low priority since the
+    generated test fixtures have zero gap; revisit if a hand-drawn DXF
+    surfaces a bug.
 - No shared Tool Library yet. Each `Add Profile` creates a fresh
   `ToolController` for the new op (or for the batch if multiple entities
   are selected). Editing diameter in Properties only affects that op's
   controller. Phase 2 should add a Tool Library dock and let ops point
   at library entries instead.
-- Properties panel is now a QStackedWidget with one form per op type
-  (ProfileForm, PocketForm). Additional op types plug in as new
-  sub-forms; `set_operation` dispatches by `isinstance` and
-  `_on_{profile,pocket}_changed` guards cross-talk.
 - Property-edit coalescing window is a hardcoded 400 ms in
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.
+- `engine/pocket.py` is still one ~1800-line file. The cross-file
+  duplication with `profile.py` is gone (via `engine/common.py`), but
+  internal duplication between OFFSET and ZIGZAG dispatch stacks
+  remains. A subpackage split (`engine/pocket/{offset,zigzag,
+  rest_machining,_shared}.py`) is the planned next refactor; deferred
+  from the April 2026 series because it's mechanically large.
+
+## Test fixtures
+`tests/fixtures/dxf/` holds hand-crafted and generated DXFs that each
+exercise a specific code path — V-notch rest-machining, ZIGZAG
+multi-region connector (known-dangerous), analytical offsetter on mixed
+line+arc chains, ramp-fallback chain, containment depth-parity, etc.
+See `tests/fixtures/dxf/README.md` for the full catalogue. The
+`gear_profile.dxf` file is generated by `scripts/generate_gear_dxf.py`
+(48-arc 12-tooth spur gear approximation; stresses tangent convex/
+concave joins).
 
 ## Code Style
 - Type hints everywhere

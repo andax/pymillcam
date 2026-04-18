@@ -792,6 +792,27 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   (default True). OFFSET only — ZIGZAG has a different residual pattern.
   Also filters pinch-off noise in the main iteration so residual isn't
   computed against spurious micro-ring artefacts.
+- ✅ Infrastructure refactor (April 2026), preparing for Phase 3:
+  - `engine/common.py` — `EngineError` base + shared cascade resolvers,
+    pass planning (`z_levels`), chain walkers, tangent helpers, and
+    IR-emit primitives lifted out of `profile.py` / `pocket.py` (~280
+    lines of duplication eliminated).
+  - `engine/services.py::ToolpathService` — single facade for preview /
+    toolpath / program generation with per-op-type dispatch via
+    `register_preview` / `register_toolpath`. The UI (`MainWindow`,
+    future wizards) talks to this; new op types register themselves.
+  - `ui/properties_panel.OperationFormBase` + `FORM_REGISTRY` — abstract
+    per-op-type form class with `@register_form(OpType)` decorator. The
+    panel is generic; adding a new op type is one form class + one
+    decorator, no `isinstance` chains.
+  - `ui/wizards/base.py` — `BaseWizard(QWizard)` with `apply(project)`
+    hook + `OperationFormPage` that reuses the same `OperationFormBase`
+    widget as the Properties panel. Scaffold for Phase 3 wizards.
+  - `ui/viewport.py` — arcs render as chord polylines with sub-pixel
+    chord sag instead of `QPainter.drawArc` (1/16° integer quantisation)
+    or `QPainterPath.arcTo` (Bézier approximation). Adjacent-arc
+    junctions share widget pixels exactly; no hairline gaps on dense
+    geometry.
 - Pocket SPIRAL strategy
 - Drill operation (simple and peck cycles)
 - Edit op geometry refs after creation (currently refs are set at
