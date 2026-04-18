@@ -657,7 +657,9 @@ pymillcam/
 │       │   ├── preferences.py       #   AppPreferences (stitch tolerance, edit coalesce)
 │       │   ├── project.py           #   Project, Stock, ProjectSettings, OperationUnion
 │       │   ├── segments.py          #   LineSegment, ArcSegment, Segment type union
+│       │   ├── selection.py         #   SimilarityMode + find_similar_entities
 │       │   ├── tools.py             #   Tool, ToolController, CuttingData
+│       │   ├── tool_library.py      #   ToolLibrary Pydantic model + atomic JSON IO
 │       │   ├── fixtures.py          #   FixtureSetup, Clamp                    [planned]
 │       │   └── materials.py         #   MaterialDatabase                       [planned]
 │       │
@@ -675,7 +677,7 @@ pymillcam/
 │       │   ├── patterns.py          #   Pattern generators                     [planned]
 │       │   ├── validation.py        #   Z stack + travel + fixture checks      [planned]
 │       │   ├── feeds_speeds.py      #   Feed/speed calculator                  [planned]
-│       │   ├── time_estimate.py     #   Operation time estimation              [planned]
+│       │   ├── time_estimate.py     #   Operation time estimation (IR-walker)
 │       │   ├── nesting.py           #   Part nesting / layout                  [planned]
 │       │   └── optimizer.py         #   Toolpath optimization / TSP            [planned]
 │       │
@@ -704,9 +706,11 @@ pymillcam/
 │       │
 │       └── ui/                      # PySide6 GUI
 │           ├── box_selection.py     #   Directional box-select + rubber-band
-│           ├── main_window.py       #   Main window, menus, toolbar, command stack
+│           ├── main_window.py       #   Main window, menus, toolbar, command stack,
+│           │                        #   op duplication, tree/viewport unified context menu
 │           ├── preferences_dialog.py #  Stitch / edit-coalesce preferences dialog
 │           ├── properties_panel.py  #   OperationFormBase + FORM_REGISTRY
+│           ├── tool_library_dialog.py #  Tool library editor
 │           ├── viewport.py          #   2D viewport (chord-polyline arcs, overlays)
 │           ├── wizards/
 │           │   ├── base.py          #   BaseWizard + BaseWizardPage + OperationFormPage
@@ -722,7 +726,6 @@ pymillcam/
 │           ├── startup_page.py      #   Startup / recent projects              [planned]
 │           ├── ops_tree.py          #   Operations tree widget (in main_window today)   [planned]
 │           ├── z_stack_view.py      #   Z stack side-view widget               [planned]
-│           ├── tool_library_ui.py   #   Tool library manager                   [planned]
 │           ├── machine_setup_ui.py  #   Machine setup dialog                   [planned]
 │           ├── external_tools_ui.py #   External tools preferences             [planned]
 │           ├── simulator_ui.py      #   Playback controls + dashboard          [planned]
@@ -868,12 +871,33 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   arbitrary polygon seed. Let the user click a point on the viewport to
   rotate the closed chain so P₀ lands there, keeping witness marks in
   scrap.)
-- Tool library (create, edit, save, load)
+- ✅ Tool library (April 2026) — `core/tool_library.ToolLibrary`
+  with atomic JSON IO + `ui/tool_library_dialog` editor + Properties-
+  panel Tool dropdown. Ops link back via `Tool.library_id`; selecting
+  a library tool locks tool-geometry fields so edits happen in the
+  library dialog. Live propagation of library edits to existing ops
+  is still future work.
 - Machine definition system with defaults cascade
-- Select Similar (same diameter, same layer, same geometry type)
-- Operation time estimator with tool change time in tree
+- ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`
+  + `find_similar_entities` (same layer / same type / same diameter
+  within 0.01 mm). Surfaced through the unified entity context menu;
+  the diameter option only appears for full-circle seeds.
+- ✅ Operation time estimator (April 2026) — `engine/time_estimate`
+  walks the IR (rapids / feeds / arcs / dwells / tool changes) with
+  feed rates resolved through the cascade. `MainWindow` annotates
+  each op row in the tree with `[hh:mm:ss]` and recomputes on
+  project change.
 - Integrated feed/speed calculator (contextual, in tool selection flow)
-- Operation duplication (Ctrl+D with geometry preservation)
+- ✅ Operation duplication (April 2026) — Ctrl+Shift+D clones the
+  selected op, preserves geometry refs and deep-copies the
+  `ToolController`. Auto-disambiguated names via
+  `(copy)` / `(copy 2)` / `(copy N)` suffix.
+- ✅ Tree/viewport unification (April 2026) — selecting an op tints
+  its member entity rows in the tree and overlays them in the
+  viewport. Right-click (tree or viewport) opens a single dynamic
+  menu: Select Similar entries only appear when applicable, per-op
+  Add/Remove toggles by current membership, viewport right-click
+  hit-tests the cursor first and falls back to current selection.
 - Measurement tools (point-to-point distance, entity dimensions)
 - Second post-processor (Mach3)
 

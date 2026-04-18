@@ -10,7 +10,11 @@ Pure data layer using Pydantic models. No UI dependencies. Serializes to JSON.
 - `project.py` — Project, Stock, ProjectSettings
 - `geometry.py` — GeometryLayer, entity wrappers around Shapely objects
 - `operations.py` — Operation base class + ProfileOp, PocketOp, DrillOp, EngraveOp, SurfaceOp, ContourOp
-- `tools.py` — Tool (geometry + cutting data), ToolController (binds tool to operation with runtime params)
+- `tools.py` — Tool (geometry + cutting data, optional `library_id` linking back to a library entry), ToolController (binds tool to operation with runtime params)
+- `tool_library.py` — `ToolLibrary` Pydantic model + atomic JSON load/save (tmp-write + rename).
+- `selection.py` — `SimilarityMode` enum + `find_similar_entities` (same layer / same type / same diameter). Pure data; the viewport + main window drive the UX.
+- `containment.py` — Polygon containment tree → (boundary, [islands]) pocket regions.
+- `path_stitching.py` — Weld entity endpoints within tolerance (shared by Operations > Join paths and opt-in auto-stitch).
 - `machine.py` — MachineDefinition (travel, spindle, macros, capabilities, defaults)
 - `fixtures.py` — FixtureSetup, Clamp
 - `materials.py` — MaterialDatabase
@@ -31,7 +35,7 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `tabs.py` — Tab generation (rectangular, triangular, thin-web)
 - `validation.py` — Z stack budget, travel limits, fixture collision checks — not yet
 - `feeds_speeds.py` — Feed/speed calculator — not yet
-- `time_estimate.py` — Operation time estimation — not yet
+- `time_estimate.py` — Pure-function operation time estimator (IR-walker over rapid / feed / arc + dwell + tool-change, feed-rate resolution from op cascade). Consumed by `main_window` to annotate ops in the tree.
 - `nesting.py` — Part nesting / layout optimization — not yet
 - `optimizer.py` — Toolpath optimization (tool grouping, rapid minimization, drill TSP) — not yet
 
@@ -46,7 +50,9 @@ Transforms IR → G-code for specific controllers.
 - `properties_panel.py` — Host + registry. `OperationFormBase` is the abstract per-op-type form; concrete forms register with `@register_form(OpType)` decorator. `PropertiesPanel` looks up the form for the bound op, binds, and listens to one `field_changed` signal. Adding a new op type = one form class + one decorator, no panel changes.
 - `wizards/base.py` — `BaseWizard(QWizard)` + `BaseWizardPage` scaffold. `OperationFormPage` reuses the same `OperationFormBase` widget that Properties uses, so forms are defined once and surface in both places.
 - `box_selection.py` — Selection-combine semantics + rubber-band rect.
-- Select Similar, operations tree, and related interactions live in `main_window.py`.
+- `tool_library_dialog.py` — Library editor (add / duplicate / delete / rename tool entries, atomic save).
+- `preferences_dialog.py` — Stitch tolerance + edit-coalesce window + auto-stitch toggle.
+- Operations tree, Select Similar, operation duplication (Ctrl+Shift+D, auto "(copy)" / "(copy N)" suffix), active-op entity highlight, and the unified tree/viewport entity context menu all live in `main_window.py`.
 
 ### Other Modules
 - `io/` — DXF import (ezdxf), SVG import, FreeCAD/LinuxCNC tool import, project save/load
@@ -132,8 +138,35 @@ Phase 2 progress (ongoing):
   island) retract+rapid+plunge instead of feed-at-depth. Uses a
   0.1 mm distance slack so chord-approximation artefacts don't
   trigger spurious retracts.
-- Tool library, machine definitions (macros wired through to the post)
-  — not yet.
+- ✅ Tool library (April 2026) — `core/tool_library.ToolLibrary`
+  (atomic JSON IO) + `ui/tool_library_dialog` editor + Properties-
+  panel Tool dropdown. Ops keep their own `ToolController` but link
+  back to a library entry via `Tool.library_id`; selecting a library
+  tool in Properties locks the tool-geometry fields (diameter, flute
+  length, …) so edits happen in the library dialog.
+- ✅ Operation time estimator (April 2026) — `engine/time_estimate`
+  walks the IR for each op (rapid / feed / arc length, dwell,
+  tool-change), resolves feed rates through the cascade, and
+  `MainWindow` annotates each op row in the tree with
+  `[hh:mm:ss]`. Recomputes on project change.
+- ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`
+  + `find_similar_entities` (same layer / same type / same diameter,
+  0.01 mm tolerance for diameter). Available from the unified entity
+  context menu (tree and viewport); the diameter option is only
+  offered for full-circle seeds.
+- ✅ Operation duplication (April 2026) — Ctrl+Shift+D duplicates
+  the selected op, preserving geometry refs and cloning the
+  `ToolController`. Auto-disambiguated names via `(copy)` /
+  `(copy 2)` / `(copy N)` suffix.
+- ✅ Active-op highlight + unified context menu (April 2026) —
+  selecting an op tints its member entity rows in the tree and
+  overlays them in the viewport. Right-click on an entity (tree or
+  viewport) opens a single shared menu that is fully dynamic:
+  Select Similar entries only show when the mode applies (diameter
+  gated to full circles), and per-op Add/Remove toggles by current
+  membership. No greyed-out items. Viewport right-click hit-tests
+  the cursor first and falls back to the current selection.
+- Machine definitions (macros wired through to the post) — not yet.
 
 Infrastructure / architecture refactors (April 2026 — prep for Phase 3):
 - ✅ `engine/common.py` extracted. ~280 lines of shared cascade / chain /
@@ -204,11 +237,11 @@ Phase 1). Per-op override via the Properties panel.
     lead anchors) sees a tiny discontinuity. Low priority since the
     generated test fixtures have zero gap; revisit if a hand-drawn DXF
     surfaces a bug.
-- No shared Tool Library yet. Each `Add Profile` creates a fresh
-  `ToolController` for the new op (or for the batch if multiple entities
-  are selected). Editing diameter in Properties only affects that op's
-  controller. Phase 2 should add a Tool Library dock and let ops point
-  at library entries instead.
+- Tool library is shipped, but ops still own their own `ToolController`.
+  Library membership is a soft link via `Tool.library_id`; edits made
+  through the library dialog don't propagate to ops already created
+  from that tool. A future "sync from library" action (or live binding)
+  is the next step when users start managing real libraries.
 - Property-edit coalescing window is a hardcoded 400 ms in
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.
