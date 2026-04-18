@@ -49,6 +49,12 @@ from pymillcam.core.preferences import (
     save_preferences,
 )
 from pymillcam.core.project import Project, ProjectSettings
+from pymillcam.core.tool_library import (
+    ToolLibrary,
+    ToolLibraryLoadError,
+    load_library,
+    save_library,
+)
 from pymillcam.core.tools import Tool, ToolController, ToolShape
 from pymillcam.engine.common import EngineError
 from pymillcam.engine.ir_walker import walk_toolpath
@@ -58,6 +64,10 @@ from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post.uccnc import UccncPostProcessor
 from pymillcam.ui.preferences_dialog import PreferencesDialog, default_preferences_path
 from pymillcam.ui.properties_panel import PropertiesPanel
+from pymillcam.ui.tool_library_dialog import (
+    ToolLibraryDialog,
+    default_library_path,
+)
 from pymillcam.ui.viewport import Viewport
 
 # Qt.ItemDataRole.UserRole stores a tuple describing what a tree item maps to:
@@ -79,6 +89,8 @@ class MainWindow(QMainWindow):
 
         self._preferences_path = default_preferences_path()
         self._preferences = self._load_preferences_or_default()
+        self._tool_library_path = default_library_path()
+        self._tool_library = self._load_tool_library_or_default()
         self._project = self._make_new_project()
         self._project_path: Path | None = None
         self._syncing_selection = False
@@ -233,6 +245,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._action_redo)
         edit_menu.addSeparator()
         edit_menu.addAction(self._action_preferences)
+
+        tools_menu = menu_bar.addMenu("&Tools")
+        self._action_tool_library = QAction("&Library…", self)
+        self._action_tool_library.triggered.connect(self._on_edit_tool_library)
+        tools_menu.addAction(self._action_tool_library)
 
         view_menu = menu_bar.addMenu("&View")
         self._action_fit = QAction("&Fit to View", self)
@@ -866,13 +883,74 @@ class MainWindow(QMainWindow):
         self._do_action("Delete operation", mutate)
 
     def _create_tool_controller_for(self, project: Project) -> ToolController:
-        diameter = self._preferences.default_tool_diameter_mm
+        """Create a new ToolController for a freshly-added op.
+
+        Source of defaults:
+          1. The library's default tool (if set and present) — this is
+             the typical path once a user has curated their library.
+          2. Otherwise, a synthesised 3 mm endmill using
+             ``preferences.default_tool_diameter_mm`` — preserves the
+             pre-library behaviour for a first-run user with an empty
+             library.
+
+        Tools are **copied** from the library (``model_copy(deep=True)``
+        with a fresh ``id``) so editing a project's op doesn't
+        retroactively mutate the library, and future library edits
+        don't alter existing projects. The price is that projects carry
+        their own snapshot — which is the right trade-off for ``.pmc``
+        portability.
+        """
         next_number = (
             max((tc.tool_number for tc in project.tool_controllers), default=0) + 1
         )
+        lib_tool = self._tool_library.default_tool()
+        if lib_tool is not None:
+            from uuid import uuid4
+            tool = lib_tool.model_copy(deep=True, update={"id": uuid4().hex})
+            cd = tool.cutting_data.get("default")
+            return ToolController(
+                tool_number=next_number,
+                tool=tool,
+                spindle_rpm=cd.spindle_rpm if cd else 18000,
+                feed_xy=cd.feed_xy if cd else 1200.0,
+                feed_z=cd.feed_z if cd else 300.0,
+            )
+        # Library empty / no default — fall back to the preference-driven
+        # synthesised tool so first-run users aren't forced to seed the
+        # library before they can add a profile.
+        diameter = self._preferences.default_tool_diameter_mm
         tool = Tool(name=f"{diameter:g}mm endmill", shape=ToolShape.ENDMILL)
         tool.geometry["diameter"] = diameter
         return ToolController(tool_number=next_number, tool=tool)
+
+    def _load_tool_library_or_default(self) -> ToolLibrary:
+        """Load the library from disk; on a malformed file, warn and
+        continue with an empty library so the app still starts."""
+        try:
+            return load_library(self._tool_library_path)
+        except ToolLibraryLoadError as exc:
+            QMessageBox.warning(
+                self,
+                "Tool library",
+                f"Could not load tool library:\n{exc}\n\nStarting with an empty library.",
+            )
+            return ToolLibrary()
+
+    def _on_edit_tool_library(self) -> None:
+        """Open the Tool Library dialog; persist on accept."""
+        dialog = ToolLibraryDialog(self._tool_library, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        new_library = dialog.result_library()
+        try:
+            save_library(new_library, self._tool_library_path)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Tool library",
+                f"Saved in-memory but could not write to disk:\n{exc}",
+            )
+        self._tool_library = new_library
 
     def _tool_controller_for(
         self, op: Operation

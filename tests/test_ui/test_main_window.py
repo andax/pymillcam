@@ -48,7 +48,7 @@ def test_has_all_top_level_menus(main_window: MainWindow) -> None:
         for action in main_window.menuBar().actions()
         if action.menu() is not None
     ]
-    assert titles == ["&File", "&Edit", "&View", "&Operations"]
+    assert titles == ["&File", "&Edit", "&Tools", "&View", "&Operations"]
 
 
 def test_tree_dock_is_on_left(main_window: MainWindow) -> None:
@@ -480,15 +480,88 @@ def test_new_project_inherits_chord_tolerance_from_preferences(
 def test_add_profile_uses_tool_diameter_from_preferences(
     main_window: MainWindow,
 ) -> None:
+    """Fallback path when the tool library has no default tool: use
+    the ``preferences.default_tool_diameter_mm`` so first-run users
+    aren't forced to seed a library before they can add anything."""
     from pymillcam.core.preferences import AppPreferences
 
     main_window._preferences = AppPreferences(default_tool_diameter_mm=6.5)
+    # Ensure library path is cold — it is by default in the fixture,
+    # but make it explicit so the test documents its precondition.
+    assert main_window._tool_library.default_tool_id is None
     project, entity = _project_with_one_circle()
     main_window.set_project(project)
     _simulate_viewport_click(main_window, "Holes", entity.id)
     main_window._action_add_profile.trigger()
     tc = main_window.project.tool_controllers[0]
     assert tc.tool.geometry["diameter"] == pytest.approx(6.5)
+
+
+def test_add_profile_uses_library_default_tool_when_set(
+    main_window: MainWindow,
+) -> None:
+    """Primary path: when the library has a default tool, Add Profile
+    copies its geometry + cutting data into a new ToolController
+    rather than synthesising a preferences-defaulted endmill."""
+    from pymillcam.core.tool_library import ToolLibrary
+    from pymillcam.core.tools import CuttingData, Tool, ToolShape
+
+    lib_tool = Tool(
+        name="library 8mm roughing",
+        shape=ToolShape.ENDMILL,
+        geometry={"diameter": 8.0, "flute_length": 25.0, "total_length": 60.0,
+                  "shank_diameter": 8.0, "flute_count": 3},
+        cutting_data={"default": CuttingData(
+            spindle_rpm=20000, feed_xy=2500.0, feed_z=800.0, stepdown=2.5,
+        )},
+    )
+    main_window._tool_library = ToolLibrary(
+        tools=[lib_tool], default_tool_id=lib_tool.id
+    )
+
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+
+    tc = main_window.project.tool_controllers[0]
+    assert tc.tool.geometry["diameter"] == pytest.approx(8.0)
+    assert tc.tool.name == "library 8mm roughing"
+    # Cutting data carried forward into the ToolController runtime fields
+    # so the op starts with the library's feeds, not the Pydantic defaults.
+    assert tc.spindle_rpm == 20000
+    assert tc.feed_xy == pytest.approx(2500.0)
+    assert tc.feed_z == pytest.approx(800.0)
+
+
+def test_add_profile_copies_library_tool_not_reference(
+    main_window: MainWindow,
+) -> None:
+    """Projects must stay self-contained: editing a project's tool
+    should not retroactively mutate the library, and editing the
+    library should not change existing ops. Guard the `id`s are
+    distinct so future "update from library" workflows can still match
+    on provenance if they want."""
+    from pymillcam.core.tool_library import ToolLibrary
+    from pymillcam.core.tools import Tool, ToolShape
+
+    lib_tool = Tool(name="lib tool", shape=ToolShape.ENDMILL)
+    lib_tool.geometry["diameter"] = 4.0
+    main_window._tool_library = ToolLibrary(
+        tools=[lib_tool], default_tool_id=lib_tool.id
+    )
+
+    project, entity = _project_with_one_circle()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "Holes", entity.id)
+    main_window._action_add_profile.trigger()
+
+    project_tool = main_window.project.tool_controllers[0].tool
+    # Same geometry, but distinct identity — the project carries a copy.
+    assert project_tool.id != lib_tool.id
+    # Mutating the project's tool doesn't touch the library's.
+    project_tool.geometry["diameter"] = 99.0
+    assert lib_tool.geometry["diameter"] == pytest.approx(4.0)
 
 
 def test_load_project_clears_undo_history(

@@ -1,5 +1,6 @@
 """Tool and ToolController models."""
 from enum import StrEnum
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -23,8 +24,16 @@ class CuttingData(BaseModel):
 
 
 class Tool(BaseModel):
-    """A physical cutting tool with geometry and cutting data."""
+    """A physical cutting tool with geometry and cutting data.
+
+    ``id`` is a stable identifier used by the ToolLibrary to reference
+    a specific tool across sessions and to dedupe imports. Defaults to
+    a UUID hex on construction; projects loaded from disk without an
+    ``id`` field get one assigned at validation time, so older ``.pmc``
+    files still load cleanly.
+    """
     version: int = 1
+    id: str = Field(default_factory=lambda: uuid4().hex)
     name: str
     shape: ToolShape = ToolShape.ENDMILL
     geometry: dict[str, float | int] = Field(default_factory=lambda: {
