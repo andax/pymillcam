@@ -11,32 +11,47 @@ Living document. Update as features land and as real machining feedback comes in
 
 ## Automated test suite
 
-Run via `uv run pytest`. Current count and coverage:
+Run via `uv run pytest`. Current count and coverage (April 2026):
 
 | Module | Tests | What they guard |
 |---|---|---|
-| `tests/test_core/test_geometry.py` | ~9 | Entity validation, segment-first shape invariants, Shapely shadow derivation, JSON round-trip with arcs |
-| `tests/test_core/test_segments.py` | ~15 | LineSegment / ArcSegment math, `segments_to_shapely` chord tolerance, full circle handling |
-| `tests/test_core/test_operations.py` | ~3 | ProfileOp defaults, geometry refs, JSON round-trip |
-| `tests/test_core/test_project.py` | ~2 | Project with geometry + ops + tool controllers round-trips |
-| `tests/test_io/test_dxf_import.py` | ~16 | LINE / LWPOLYLINE (incl. bulges) / POLYLINE / CIRCLE / ARC / POINT, inch-to-mm scaling, seam-crossing arcs, layer grouping |
-| `tests/test_io/test_project_io.py` | ~8 | Save/load round-trip, string vs Path, pretty vs compact, error paths |
-| `tests/test_engine/test_profile.py` | ~20 | Z-level computation, inside/outside/on-line offsets, stepdown cascade, arc IR emission (CW/CCW), chord_tolerance cascade |
-| `tests/test_post/test_uccnc.py` | ~18 | Individual G-code translations, feed-rate modality, coordinate formatting, end-to-end DXF → G-code with arcs preserved |
-| `tests/test_ui/test_main_window.py` | ~24 | Chrome, status-bar, DXF load, tree↔viewport sync, Add Profile (per-op tool controller), Generate G-code, properties edit→regen, save/load, profile preview live update, toolpath preview after generate, edit invalidates stale toolpath |
-| `tests/test_ui/test_viewport.py` | ~16 | Viewport instantiates, set_layers, world↔widget, Y-up, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep, profile preview set/clear, show-toggles preserve state |
-| `tests/test_ui/test_properties_panel.py` | ~9 | Empty placeholder, populate from op, edit→model+signal, multi-pass / chord-override toggles, populate-doesn't-re-emit, tool diameter disabled w/o controller, tool diameter writes back to controller |
-| `tests/test_engine/test_ir_walker.py` | ~5 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion instructions skipped |
-| `tests/test_core/test_commands.py` | ~8 | Empty stack, push→undo→redo round-trip, new-push clears redo, multi-step done/undone math, clear, no-op push dropped, descriptions track top |
-| `tests/test_ui/test_box_selection.py` | ~9 | direction_from_drag, contained vs crossing matching, inverted box normalisation, arc/point handling, invisible layer skip, empty layer list |
-| `tests/test_core/test_preferences.py` | ~7 | Defaults, save/load round-trip, missing file → defaults, malformed/invalid JSON raises, atomic write |
-| `tests/test_ui/test_preferences_dialog.py` | ~4 | Field population, edits round-trip via result_preferences, stitch field disabled when auto-stitch off, dialog doesn't mutate input |
-| `tests/test_core/test_path_stitching.py` | ~15 | Two/three/four-line chains, ambiguous junction stays unstitched, tolerance window, arc reversal negates sweep, closure snap, mixed closed/open, pass-through, label rewrite to "path" |
-| `tests/test_core/test_offsetter.py` | ~12 | Full-circle grow/shrink, square outside rounds corners, square inside trims corners, CW input normalised, rounded rectangle preserves arc centres, fillet geometry, expected area, too-large-feature raises |
-| _direction in `tests/test_engine/test_profile.py`_ | +2 | Outside+climb traces CCW; outside+conventional reverses to CW |
-| _direction in `tests/test_ui/test_properties_panel.py`_ | +1 | Direction combo round-trips through the form |
+| **Core data model** | | |
+| `tests/test_core/test_geometry.py` | 9 | Entity validation, segment-first shape invariants, Shapely shadow derivation, JSON round-trip with arcs |
+| `tests/test_core/test_segments.py` | 19 | LineSegment / ArcSegment math, `segments_to_shapely` chord tolerance, full circle handling |
+| `tests/test_core/test_operations.py` | 3 | ProfileOp / PocketOp / DrillOp defaults, geometry refs, JSON round-trip |
+| `tests/test_core/test_project.py` | 2 | Project with geometry + ops + tool controllers round-trips |
+| `tests/test_core/test_commands.py` | 8 | Empty stack, push→undo→redo round-trip, new-push clears redo, multi-step math, clear, no-op push dropped |
+| `tests/test_core/test_preferences.py` | 7 | Defaults, save/load round-trip, missing file → defaults, malformed JSON raises, atomic write |
+| `tests/test_core/test_path_stitching.py` | 15 | Two/three/four-line chains, Y-junction stays unstitched, tolerance window, arc reversal negates sweep, closure snap, label rewrite |
+| `tests/test_core/test_offsetter.py` | 12 | Full-circle grow/shrink, square outside rounds corners, square inside trims corners, CW normalisation, rounded rectangle arc centres, too-large raises |
+| `tests/test_core/test_containment.py` | 9 | Depth-parity pocket region grouping, nested pockets alternate, disjoint boundaries each get their own region |
+| `tests/test_core/test_selection.py` | 15 | `SimilarityMode` semantics (SAME_LAYER / SAME_TYPE / SAME_DIAMETER), full-circle radius predicate, seed-in-result, missing-seed guards |
+| `tests/test_core/test_tool_library.py` | 16 | `ToolLibrary` CRUD, id assignment, atomic load/save (tmp+rename), missing-file defaults, malformed JSON raises |
+| **Import / export** | | |
+| `tests/test_io/test_dxf_import.py` | 17 | LINE / LWPOLYLINE (incl. bulges) / POLYLINE / CIRCLE / ARC / POINT, inch-to-mm scaling, seam-crossing arcs, layer grouping |
+| `tests/test_io/test_project_io.py` | 8 | Save/load round-trip, string vs Path, pretty vs compact, error paths |
+| **Engine** | | |
+| `tests/test_engine/test_common.py` | 32 | Shared resolvers (tool / entity / stepdown / chord / safe / clearance), `z_levels` pass planning, chain walkers, tangent helpers, IR-emit primitives, `error_cls` pass-through |
+| `tests/test_engine/test_profile.py` | 51 | Z-levels, inside/outside/on-line offsets, stepdown cascade, G2/G3 emission, chord_tolerance cascade, leads (arc/tangent/direct), on-contour ramp descent/cleanup/ascent, tabs (rect auto-spaced, multi-depth `max(planned, tab)`), climb vs conventional direction |
+| `tests/test_engine/test_pocket.py` | 60 | OFFSET rings + ramp entry + fallback chain, ZIGZAG raster + finishing ring + angle rotation, islands (OFFSET ring-groups with retract; ZIGZAG per-wall rings), multi-region connector safety, rest-machining residual set math + reachability filter, adaptive last-pass |
+| `tests/test_engine/test_drill.py` | 20 | SIMPLE / PECK / CHIP_BREAK cycle shape in IR, POINT / full-circle / closed-contour target resolution, between-hole clearance traversal, inter-op safe_height, tool-change emission |
+| `tests/test_engine/test_tabs.py` | 19 | Arc-length auto-spacing, ramp plateau geometry, Z modulation across passes, coexistence with on-contour ramp |
+| `tests/test_engine/test_services.py` | 12 | `ToolpathService` dispatch registry, preview vs toolpath registration, unknown op type raises, engine errors surface once via `EngineError` |
+| `tests/test_engine/test_time_estimate.py` | 24 | Rapid / feed / arc time math, dwell + tool-change addition, feed-rate cascade resolution, zero-feed guard |
+| `tests/test_engine/test_ir_walker.py` | 6 | Z-only moves drop, rapid+feed kinds, CCW quarter arc, CW full circle, non-motion skipped |
+| **Post-processors** | | |
+| `tests/test_post/test_uccnc.py` | 20 | G-code translation, feed-rate modality, coordinate formatting, end-to-end DXF → G-code with arcs preserved |
+| **UI** | | |
+| `tests/test_ui/test_main_window.py` | 73 | Chrome, DXF load, tree↔viewport sync, Add Profile/Pocket/Drill batch + ToolController, Generate G-code, edit→regen invalidates stale toolpath, save/load, profile + toolpath preview, active-op entity tinting, Ctrl+Shift+D duplication with `(copy N)` suffix, Shift+A / Shift+R active-op geometry edit, unified entity context menu (dynamic Select Similar + per-op Add/Remove), tree right-click preserves op selection |
+| `tests/test_ui/test_viewport.py` | 25 | Instantiates, set_layers, world↔widget, Y-up, fit-to-view, wheel-zoom, grid spacings, hit-test, programmatic vs interactive selection, arc-angle-within-sweep, profile preview set/clear, show-toggles, active-op overlay |
+| `tests/test_ui/test_viewport_arc_rendering.py` | 7 | Chord-polyline sampling (sub-pixel chord sag ≤ 0.5 px), adjacent-arc junctions share widget pixels exactly, no hairline gaps at any zoom |
+| `tests/test_ui/test_properties_panel.py` | 46 | Empty placeholder, `FORM_REGISTRY` lookup by op type, populate-doesn't-re-emit, multi-pass / chord-override toggles, Tool dropdown + locked fields when library tool picked, direction combo, drill cycle fields |
+| `tests/test_ui/test_box_selection.py` | 14 | `direction_from_drag`, contained vs crossing, inverted box, arc/point handling, invisible layer skip, empty layer list |
+| `tests/test_ui/test_preferences_dialog.py` | 4 | Field population, edits round-trip, stitch field disabled when auto-stitch off, no input mutation |
+| `tests/test_ui/test_tool_library_dialog.py` | 15 | Add / duplicate / delete / rename tool entries, save/load, dialog doesn't mutate input until OK, atomic write |
+| `tests/test_ui/test_wizards_base.py` | 6 | `BaseWizard.apply(project)` runs on Finish not Cancel, `OperationFormPage` embeds the same `OperationFormBase` widget the Properties panel uses |
 
-**Totals: ~234 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy --strict`.**
+**Totals: 600 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy src` (strict).**
 
 ### Critical invariants the suite guards against regression
 
@@ -49,6 +64,14 @@ Any change that breaks these should trip a test. If not, add the test.
 5. Project JSON round-trip preserves arc segments as `ArcSegment`, not chord approximations.
 6. Full-circle arcs through `segments_to_shapely` close exactly (no sub-picometre residual edge), so `Polygon.buffer` produces a clean offset ring with every vertex at the expected radius.
 7. OUTSIDE/INSIDE offset of a circle, line-only polygon, or rounded rectangle goes through the analytical offsetter and preserves arcs (no chord faceting). G-code shows G3 fillets at convex corners.
+8. Pocket OFFSET with islands groups disjoint ring-pieces so the engine emits retract+rapid+plunge between them (no feed-through-an-island).
+9. Pocket rest-machining stays inside `residual ∩ tool_center_space` — the engine never emits a cleanup ring that would gouge a wall or cross an already-swept region redundantly.
+10. Drill IR is expanded G0/G1 (never canned G81/G83); SIMPLE = plunge+retract, PECK = full retract between pecks, CHIP_BREAK = small in-hole retract between pecks.
+11. Viewport renders arcs as chord polylines with sub-pixel chord sag (≤ 0.5 px); adjacent-arc junctions share widget pixels exactly so there's no hairline gap on dense geometry like gear teeth.
+12. `find_similar_entities` matches same-diameter circles within 0.01 mm; a non-circle seed returns an empty result for `SAME_DIAMETER`; a rectangle whose bounding size happens to match a circle radius is **not** a diameter match.
+13. `ToolpathService` dispatches by op type via `register_preview` / `register_toolpath`; `MainWindow` never branches on op type.
+14. `Ctrl+Shift+D` duplication preserves geometry refs, deep-copies the `ToolController`, and assigns a unique `(copy)` / `(copy N)` name.
+15. Tool library save is atomic (tmp-write + rename) — a crash mid-save never leaves a truncated library on disk.
 
 ## Manual verification log
 
@@ -89,9 +112,10 @@ Append rows when human eyeballs have confirmed something works.
 - **M-G to do when machine macros are wired**: confirm `program_start` / `program_end` / `tool_change` macros from `MachineDefinition` emit correctly.
 - **Gap**: we don't yet emit N-numbered lines. Some UCCNC operators prefer them for fault recovery — add an option if requested.
 
-### Step 5 — Minimal PySide6 window  ⬜
+### Step 5 — Minimal PySide6 window  ✅
 
-Mostly manual; automated coverage is limited to signal/slot smoke tests via pytest-qt.
+Automated coverage via pytest-qt is now extensive (`test_main_window.py` alone has 73 tests).
+Manual checklists below are retained so visual correctness gets a human pass whenever that area is touched.
 
 **Sub-commit 1 — Main window shell**  ✅
 - A: `tests/test_ui/test_main_window.py` — instantiation, title, menu order, dock placement, placeholder actions disabled, exit action closes window.
@@ -105,7 +129,7 @@ Mostly manual; automated coverage is limited to signal/slot smoke tests via pyte
 
 **Sub-commit 2 — Viewport (the hardest to verify)**  ✅
 - A: `tests/test_ui/test_viewport.py` — instantiation, mixed line/arc `set_layers`, world↔widget transform, Y-up invariant, `fit_to_view` centring, wheel-zoom preserves cursor world point, grid-spacing heuristic, `mouse_position_changed` signal fires.
-- Implementation note: arcs render via `QPainter.drawArc` (vector primitive), so they stay smooth at any zoom without needing run-time discretization.
+- Implementation note: arcs render as chord polylines sampled to sub-pixel chord sag (≤ 0.5 px). An earlier version used `QPainter.drawArc` (1/16° integer quantisation) and `QPainterPath.arcTo` (Bézier approximation) but both produced hairline gaps at adjacent-arc junctions on dense geometry (e.g. gear teeth). `test_viewport_arc_rendering.py` guards the replacement.
 - **M-V to do** (human verification — run `uv run pymillcam`, load a DXF):
   - [ ] A 50 mm circle renders as a smooth circle (not a visible polygon), even when zoomed way in.
   - [ ] Y-axis points up (CAD convention): world (0, 10) appears above world (0, 0).
@@ -180,6 +204,53 @@ Implemented as a snapshot-based stack: each entry holds `(description, before_di
 - Automated: `tests/test_io/test_project_io.py`.
 - **M-V to do when UI lands**: File > Save / Open round-trip produces a project identical to what was on screen.
 - **M-G**: open a saved .pmc in a text editor, confirm it's readable and diff-friendly.
+
+## Phase 2
+
+Phase 2 items are covered by automated tests — see the module table above. Manual verification checklists here for the UI-visible pieces; tick off in the log when a human has confirmed them.
+
+### Leads + on-contour ramp  ✅
+- A: `test_engine/test_profile.py` (leads, ramp descent/cleanup/ascent).
+- **M-V**: preview draws leads on top of the contour; ramp descent slice is visibly sloped in the toolpath preview.
+
+### Pocket OFFSET + ZIGZAG + islands + rest-machining  ✅
+- A: `test_engine/test_pocket.py` (60 tests).
+- **M-G**: generate a multi-region pocket with islands → open the G-code in CAMotics / UCCNC preview → confirm retract between disjoint groups and no feed-through-an-island.
+- **M-G**: V-notch fixture (`tests/fixtures/dxf/vnotch_pocket.dxf`) → generate with `rest_machining=True` → confirm cleanup passes stay inside the notch.
+
+### Profile tabs  ✅
+- A: `test_engine/test_tabs.py`.
+- **M-V**: in multi-pass mode, confirm tabs render visibly raised in the toolpath preview on the final pass.
+
+### Drill operation  ✅
+- A: `test_engine/test_drill.py`, `test_ui/test_main_window.py`.
+- **M-G**: generate PECK and CHIP_BREAK cycles → confirm IR expands correctly (no G81/G83).
+- **M-V**: drill targets accept POINT entities AND closed-circle selection in the UI.
+
+### Tool library  ✅
+- A: `test_core/test_tool_library.py`, `test_ui/test_tool_library_dialog.py`, Tool dropdown in `test_properties_panel.py`.
+- **M-V**: Edit > Tool library → add / duplicate / rename tool → restart app → tool persists.
+- **M-V**: selecting a library tool on an op locks the tool-geometry fields; editing library tool in dialog does NOT retroactively change existing ops (known soft-link behaviour).
+
+### Select Similar  ✅
+- A: `test_core/test_selection.py`, `test_ui/test_main_window.py` (unified menu).
+- **M-V**: right-click a full-circle → "Select similar diameter" picks all same-diameter circles across layers.
+- **M-V**: right-click a line → the "Select similar diameter" entry does NOT appear (dynamic menu).
+
+### Operation duplication  ✅
+- A: `test_ui/test_main_window.py`.
+- **M-V**: Ctrl+Shift+D → new op gets `(copy)` suffix; a second duplicate gets `(copy 2)`.
+- **M-V**: duplicated op's ToolController edits don't leak back to the original.
+
+### Active-op entity highlight + unified context menu  ✅
+- A: `test_ui/test_main_window.py`, `test_ui/test_viewport.py`.
+- **M-V**: selecting an op in the tree tints its member rows + overlays them in the viewport (green).
+- **M-V**: right-click an entity anywhere → same menu from either surface; items that don't apply don't appear.
+- **M-V**: Shift+A / Shift+R add/remove viewport-selected entities to/from the active op.
+
+### Operation time estimate  ✅
+- A: `test_engine/test_time_estimate.py`.
+- **M-V**: each op row in the tree shows `[hh:mm:ss]`; edits recompute.
 
 ## Integration / end-to-end scenarios
 

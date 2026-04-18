@@ -9,9 +9,11 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 > **outside/inside profile cutouts** (with leads, on-contour ramp entry,
 > and tabs), **pockets** (concentric-offset and zigzag strategies, islands,
 > rest-machining for V-notch corners), and **drilling** (simple / peck /
-> chip-break cycles), exported as **UCCNC G-code**. Other posts (Mach3,
-> GRBL, LinuxCNC), wizards, tool library, safety checks and built-in
-> simulation are not built yet — see [Roadmap](#roadmap) below.
+> chip-break cycles), exported as **UCCNC G-code**. A shared **tool library**
+> (JSON), **Select Similar**, operation **duplication** and per-op **time
+> estimates** in the ops tree are in. Other posts (Mach3, GRBL, LinuxCNC),
+> wizards, machine macros, safety checks and built-in simulation are not
+> built yet — see [Roadmap](#roadmap) below.
 
 ## What works today
 
@@ -39,9 +41,11 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 - **Drill operation.** Three cycle types: **simple** (one plunge per
   hole), **peck** (full retract between pecks for chip clearance),
   **chip-break** (small in-hole retract to snap the chip). Drill targets
-  can be POINT entities or closed circles — the engine resolves each
-  closed contour to its centre. Multi-hole per operation; between-hole
-  traversal at the clearance plane.
+  can be POINT entities, closed circles, or closed contours — the engine
+  resolves each target to a centre (exact for full-circle arcs; Shapely
+  centroid for closed contours). Multi-hole per operation; between-hole
+  traversal at the clearance plane. Expanded G0/G1 IR (not canned
+  G81/G83) for post-processor portability.
 - **Profile tabs.** Rectangular tabs, auto-spaced by arc-length, tuned
   with count / width / height / ramp length. Multi-depth aware — on
   passes that would cut through the tab, Z modulates to
@@ -56,6 +60,25 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   back to the surface before the lead-out.
 - **UCCNC G-code output.** Emits G2/G3 with helical Z for ramps, feed
   modality, tool change and spindle commands.
+- **Tool library.** JSON-backed (`~/.config/PyMillCAM/tool_library.json`),
+  atomic save (crash-safe). Edit > Tool library opens a dialog to add /
+  duplicate / rename / delete entries. The Properties panel has a Tool
+  dropdown on each operation; selecting a library tool locks the
+  tool-geometry fields so edits happen in one place.
+- **Select Similar.** Right-click any entity (tree or viewport) → pick
+  *same layer* / *same geometry type* / *same diameter* (circles only,
+  0.01 mm tolerance). Critical for selecting 200 identical mounting
+  holes in one click.
+- **Operation duplication.** `Ctrl+Shift+D` clones the selected op with
+  a unique `(copy)` / `(copy N)` suffix. Use case: spot drill → peck
+  drill → ream on the same holes, each with its own tool and cycle.
+- **Active-op geometry editing.** Selecting an op tints its member
+  entities (green) in the viewport and the tree. `Shift+A` / `Shift+R`
+  add/remove the current viewport selection to the active op — or use
+  the same actions from the unified right-click menu on any entity.
+- **Per-op time estimate.** Each op row in the tree shows an `[hh:mm:ss]`
+  estimate (rapids + feeds + arcs + dwell + tool-change), recomputed
+  on project change.
 - **PySide6 GUI.** 2D viewport with pan / zoom / fit, directional box
   selection (L→R contained, R→L crossing) with `Ctrl`/`Shift` modifiers
   for multi-select, operations tree, Properties panel, G-code output pane,
@@ -69,9 +92,10 @@ See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
 - Pocket spiral strategy (offset and zigzag are done)
-- Tool library (create, edit, save, load — superset of FreeCAD .fctb)
 - User-selectable contour start position (so lead / ramp marks land in scrap)
 - Machine definition system with defaults cascade (macros wired through the post)
+- Feed/speed calculator (contextual, in the tool picker)
+- FreeCAD `.fctb` / `.fctl` and LinuxCNC tool-table import into the tool library
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place
 - Pre-flight safety (Z stack budget, travel, fixture collision)
 - Built-in simulator
@@ -132,6 +156,9 @@ See [`examples/README.md`](examples/README.md) for more samples and the
 | Add Profile | `Ctrl+P` |
 | Add Pocket | `Ctrl+K` |
 | Add Drill | `Ctrl+D` |
+| Duplicate operation | `Ctrl+Shift+D` |
+| Add to active op | `Shift+A` |
+| Remove from active op | `Shift+R` |
 | Delete operation | `Del` |
 | Generate G-code | `Ctrl+G` |
 
