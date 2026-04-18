@@ -5,10 +5,14 @@ Coordinate system notes:
 - Widget pixels are the usual +X right, +Y down.
 - Mapping is done manually (not via `QTransform`) so text/grid labels stay
   right-side up. `_world_to_widget` and `_widget_to_world` are the bridges.
-- Arcs render via `QPainter.drawArc`, which uses mathematical CCW angle
-  convention with 0° at 3 o'clock — the same as our `ArcSegment`. So
-  `start_angle_deg` and `sweep_deg` pass through untouched (only converted
-  to Qt's 1/16-degree units).
+- Arcs render as chord polylines, sampled with chord sag ≤ 0.5 px. The
+  endpoints are taken directly from ``seg.start`` / ``seg.end`` via
+  ``world_to_widget`` so adjacent segments share pixel-exact junctions
+  — no gap, at any zoom. Qt's native arc primitives (``drawArc`` with
+  1/16° integer units, ``QPainterPath.arcTo`` with Bézier approximation)
+  both mis-place arc endpoints by 0.001–0.01 mm relative to the
+  mathematical circle, which shows as visible hairline gaps at
+  adjacent-arc junctions on dense geometry like gear teeth.
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ from PySide6.QtGui import (
     QColor,
     QMouseEvent,
     QPainter,
+    QPainterPath,
     QPaintEvent,
     QPen,
     QPolygonF,
@@ -47,6 +52,57 @@ ZOOM_STEP = 1.2
 
 # Desired pixel spacing for the minor grid; spacing adapts so this stays near.
 TARGET_MINOR_SPACING_PX = 10.0
+
+# Max chord sag (px) allowed when sampling an arc as a polyline. 0.5 px is
+# sub-pixel at any zoom — the polyline is indistinguishable from the true
+# arc once rasterised.
+_ARC_MAX_SAG_PX = 0.5
+
+# Ceiling on arc-sampling density. At r_px ≈ 1e6 (absurd zoom on a huge
+# arc), this cap still keeps chord sag under 0.5 px.
+_ARC_MAX_SAMPLES = 4096
+
+
+def arc_polyline_world_points(
+    arc: ArcSegment, scale_px_per_mm: float
+) -> list[tuple[float, float]]:
+    """Sample an arc as a chord polyline in world coordinates.
+
+    The first point equals ``arc.start`` and the last equals ``arc.end``
+    bit-for-bit — the caller can feed these straight into
+    ``world_to_widget`` and adjacent segments will share a pixel-exact
+    junction. Intermediate points land on the true circle; chord sag
+    is bounded by 0.5 px in widget space.
+
+    Pure function (no Qt dependency) — extracted for testability.
+    """
+    r_px = arc.radius * scale_px_per_mm
+    if r_px < 1.0:
+        # Sub-pixel arc collapses to a chord.
+        return [arc.start, arc.end]
+    # Chord-sag: h = r · (1 − cos(Δθ/2)). Solve for Δθ at h = 0.5 px.
+    # The ``max`` clamp handles r_px < 0.5, where the formula's argument
+    # would otherwise dip below −1.
+    ratio = max(-1.0, 1.0 - _ARC_MAX_SAG_PX / r_px)
+    step_rad = 2.0 * math.acos(ratio)
+    sweep_rad = math.radians(abs(arc.sweep_deg))
+    n = max(2, int(math.ceil(sweep_rad / step_rad)))
+    # Cap sample count for extreme-zoom pathological cases; 4096 chords
+    # still gives sub-0.5-px sag on an arc with r_px ≈ 1e6.
+    n = min(n, _ARC_MAX_SAMPLES)
+    cx, cy = arc.center
+    r = arc.radius
+    start_deg = arc.start_angle_deg
+    sweep_deg = arc.sweep_deg
+    pts: list[tuple[float, float]] = [arc.start]
+    for i in range(1, n):
+        ang = math.radians(start_deg + (sweep_deg * i) / n)
+        pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+    # Close on the exact computed end, not on the angle-loop final sample,
+    # so adjacent segments' endpoints match the underlying ``ArcSegment``
+    # model to floating-point precision.
+    pts.append(arc.end)
+    return pts
 
 # Visual styling.
 COLOR_BACKGROUND = QColor(30, 30, 32)
@@ -506,13 +562,22 @@ class Viewport(QWidget):
             p2 = self.world_to_widget(*seg.end)
             painter.drawLine(p1, p2)
             return
-        # Arc: draw via Qt's native arc primitive so it stays smooth at any zoom.
-        c = self.world_to_widget(*seg.center)
-        r_px = seg.radius * self._scale
-        rect = QRectF(c.x() - r_px, c.y() - r_px, 2 * r_px, 2 * r_px)
-        start = int(round(seg.start_angle_deg * 16))
-        span = int(round(seg.sweep_deg * 16))
-        painter.drawArc(rect, start, span)
+        self._draw_arc(painter, seg)
+
+    def _draw_arc(self, painter: QPainter, arc: ArcSegment) -> None:
+        """Render an arc as a chord polyline with chord sag ≤ 0.5 px.
+
+        The polyline's first and last points are ``arc.start`` / ``arc.end``
+        (bit-for-bit), so adjacent segments at a shared mathematical
+        point render at the same widget pixel. Sub-pixel arcs collapse
+        to a single chord.
+        """
+        pts = arc_polyline_world_points(arc, self._scale)
+        path = QPainterPath()
+        path.moveTo(self.world_to_widget(*pts[0]))
+        for p in pts[1:]:
+            path.lineTo(self.world_to_widget(*p))
+        painter.drawPath(path)
 
     # ----------------------------------------------------------- interaction
 
