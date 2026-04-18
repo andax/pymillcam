@@ -59,6 +59,10 @@ from pymillcam.core.tools import Tool, ToolController, ToolShape
 from pymillcam.engine.common import EngineError
 from pymillcam.engine.ir_walker import walk_toolpath
 from pymillcam.engine.services import ToolpathService
+from pymillcam.engine.time_estimate import (
+    estimate_toolpath_seconds,
+    format_seconds,
+)
 from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post.uccnc import UccncPostProcessor
@@ -492,6 +496,61 @@ class MainWindow(QMainWindow):
             self._edit_snapshot = after
             self._refresh_action_state()
 
+    def _try_estimate_op_seconds(self, op: Operation) -> float | None:
+        """Generate the op's toolpath and estimate its time.
+
+        Returns ``None`` when the op's toolpath can't be produced —
+        incomplete geometry refs, unsupported op type, any engine
+        error. The tree renders ``None`` as "(—)"; the running total
+        ignores it so one broken op doesn't poison the total.
+        """
+        if not op.enabled:
+            return 0.0
+        try:
+            tp = self._toolpath_service.generate_toolpath(op, self._project)
+        except EngineError:
+            return None
+        if tp is None:
+            return None
+        return estimate_toolpath_seconds(tp)
+
+    def _refresh_op_tree_labels(self, ops_group_item: QTreeWidgetItem) -> None:
+        """In-place refresh of op labels + the ops-group total.
+
+        Used by ``_on_operation_edited`` to pick up time-estimate changes
+        without blowing away the tree's current expansion / selection
+        state (which a full ``_rebuild_tree`` would reset).
+        """
+        total_seconds = 0.0
+        has_any_estimate = False
+        for j in range(ops_group_item.childCount()):
+            child = ops_group_item.child(j)
+            if child is None:
+                continue
+            child_ref: _TreeRef = child.data(0, Qt.ItemDataRole.UserRole)
+            if not child_ref or child_ref[0] != "operation":
+                continue
+            op = self._find_operation(child_ref[1])
+            if op is None:
+                continue
+            secs = self._try_estimate_op_seconds(op)
+            if secs is not None:
+                total_seconds += secs
+                has_any_estimate = True
+                time_suffix = f"  —  {format_seconds(secs)}"
+            else:
+                time_suffix = "  —  (—)"
+            child.setText(0, f"{op.name} [{op.type}]{time_suffix}")
+        total_suffix = (
+            f"  —  total {format_seconds(total_seconds)}"
+            if has_any_estimate and ops_group_item.childCount()
+            else ""
+        )
+        ops_group_item.setText(
+            0,
+            f"Operations ({ops_group_item.childCount()}){total_suffix}",
+        )
+
     def _rebuild_tree(self) -> None:
         self._tree.blockSignals(True)
         try:
@@ -515,10 +574,39 @@ class MainWindow(QMainWindow):
                 self._tree.addTopLevelItem(layer_item)
                 layer_item.setExpanded(True)
 
-            ops_item = QTreeWidgetItem([f"Operations ({len(self._project.operations)})"])
+            # Compute per-op machining time while we build the tree.
+            # Generation failures (incomplete op, engine doesn't support
+            # the type yet, …) render as "—" rather than blowing up the
+            # whole tree rebuild. The running total only sums ops that
+            # estimated cleanly — otherwise an error in one op would
+            # make the project total meaningless.
+            op_seconds: dict[str, float | None] = {}
+            total_seconds = 0.0
+            has_any_estimate = False
+            for op in self._project.operations:
+                op_seconds[op.id] = self._try_estimate_op_seconds(op)
+                if op_seconds[op.id] is not None:
+                    total_seconds += op_seconds[op.id]  # type: ignore[operator]
+                    has_any_estimate = True
+
+            total_suffix = (
+                f"  —  total {format_seconds(total_seconds)}"
+                if has_any_estimate and self._project.operations
+                else ""
+            )
+            ops_item = QTreeWidgetItem([
+                f"Operations ({len(self._project.operations)}){total_suffix}"
+            ])
             ops_item.setData(0, Qt.ItemDataRole.UserRole, ("ops_group",))
             for op in self._project.operations:
-                op_item = QTreeWidgetItem([f"{op.name} [{op.type}]"])
+                secs = op_seconds.get(op.id)
+                time_suffix = (
+                    f"  —  {format_seconds(secs)}" if secs is not None
+                    else "  —  (—)"
+                )
+                op_item = QTreeWidgetItem([
+                    f"{op.name} [{op.type}]{time_suffix}"
+                ])
                 op_item.setData(0, Qt.ItemDataRole.UserRole, ("operation", op.id))
                 ops_item.addChild(op_item)
             self._tree.addTopLevelItem(ops_item)
@@ -1010,16 +1098,7 @@ class MainWindow(QMainWindow):
             ref: _TreeRef = top.data(0, Qt.ItemDataRole.UserRole)
             if not ref or ref[0] != "ops_group":
                 continue
-            for j in range(top.childCount()):
-                child = top.child(j)
-                if child is None:
-                    continue
-                child_ref: _TreeRef = child.data(0, Qt.ItemDataRole.UserRole)
-                if not child_ref or child_ref[0] != "operation":
-                    continue
-                op = self._find_operation(child_ref[1])
-                if op is not None:
-                    child.setText(0, f"{op.name} [{op.type}]")
+            self._refresh_op_tree_labels(top)
         # Refresh the live operation preview against the new parameters.
         self._update_operation_preview(self._currently_selected_operation())
         # Edits invalidate any previously generated toolpath — clear both the
