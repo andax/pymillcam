@@ -48,17 +48,9 @@ from pymillcam.core.preferences import (
 )
 from pymillcam.core.project import Project, ProjectSettings
 from pymillcam.core.tools import Tool, ToolController, ToolShape
+from pymillcam.engine.common import EngineError
 from pymillcam.engine.ir_walker import walk_toolpath
-from pymillcam.engine.pocket import (
-    PocketGenerationError,
-    compute_pocket_preview,
-    generate_pocket_toolpath,
-)
-from pymillcam.engine.profile import (
-    ProfileGenerationError,
-    compute_profile_preview,
-    generate_profile_toolpath,
-)
+from pymillcam.engine.services import ToolpathService
 from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post.uccnc import UccncPostProcessor
@@ -89,6 +81,9 @@ class MainWindow(QMainWindow):
         self._project_path: Path | None = None
         self._syncing_selection = False
         self._stack = CommandStack()
+        # Single engine facade; op types register inside the engine, not
+        # here — this just dispatches by type.
+        self._toolpath_service = ToolpathService()
         # Snapshot taken when an op gets bound to the Properties panel; used as
         # the 'before' state for any edits that follow until they're committed
         # by the idle timer below.
@@ -588,16 +583,13 @@ class MainWindow(QMainWindow):
             self._viewport.clear_profile_preview()
             return
         try:
-            if isinstance(op, ProfileOp):
-                preview = compute_profile_preview(op, self._project)
-            elif isinstance(op, PocketOp):
-                preview = compute_pocket_preview(op, self._project)
-            else:
-                self._viewport.clear_profile_preview()
-                return
-        except (ProfileGenerationError, PocketGenerationError, ValueError):
+            preview = self._toolpath_service.compute_preview(op, self._project)
+        except (EngineError, ValueError):
             # Live preview should never block editing — failures (e.g. an inside
             # offset that swallows the geometry) just blank the overlay.
+            self._viewport.clear_profile_preview()
+            return
+        if not preview:
             self._viewport.clear_profile_preview()
             return
         self._viewport.set_profile_preview(preview)
@@ -924,19 +916,13 @@ class MainWindow(QMainWindow):
     def _on_generate_gcode(self) -> None:
         if not self._project.operations:
             return
-        toolpaths = []
         try:
-            for op in self._project.operations:
-                if not op.enabled:
-                    continue
-                if isinstance(op, ProfileOp):
-                    toolpaths.append(generate_profile_toolpath(op, self._project))
-                elif isinstance(op, PocketOp):
-                    toolpaths.append(generate_pocket_toolpath(op, self._project))
-        except (ProfileGenerationError, PocketGenerationError) as exc:
+            gcode, toolpaths = self._toolpath_service.generate_program(
+                self._project, UccncPostProcessor()
+            )
+        except EngineError as exc:
             QMessageBox.critical(self, "G-code generation failed", str(exc))
             return
-        gcode = UccncPostProcessor().post_program(toolpaths)
         self._output.setPlainText(gcode)
         # Walk every toolpath into XY moves and show them as the
         # "what the machine will actually do" overlay.
