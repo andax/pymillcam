@@ -15,8 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QPoint, QPointF, Qt, QTimer
+from PySide6.QtGui import QAction, QBrush, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -79,7 +79,7 @@ from pymillcam.ui.tool_library_dialog import (
     ToolLibraryDialog,
     default_library_path,
 )
-from pymillcam.ui.viewport import Viewport
+from pymillcam.ui.viewport import COLOR_ACTIVE_OP_MEMBER, Viewport
 
 # Qt.ItemDataRole.UserRole stores a tuple describing what a tree item maps to:
 #   ("layer", layer_name)                   — layer header row
@@ -203,6 +203,8 @@ class MainWindow(QMainWindow):
         tree.setObjectName("tree")
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
         dock = QDockWidget("Layers & Operations", self)
         dock.setObjectName("tree_dock")
@@ -724,7 +726,10 @@ class MainWindow(QMainWindow):
         else:
             self._properties.set_operation(None)
             self._viewport.clear_profile_preview()
-            self._viewport.set_active_op_refs([])
+            # Route through ``_update_active_op_refs`` (not the bare
+            # ``set_active_op_refs``) so the tree-row tint clears in
+            # lockstep with the viewport overlay.
+            self._update_active_op_refs(None)
             self._edit_snapshot = None
         self._refresh_action_state()
 
@@ -733,10 +738,43 @@ class MainWindow(QMainWindow):
     ) -> None:
         if op is None:
             self._viewport.set_active_op_refs([])
+            self._update_tree_active_op_highlight(set())
             return
-        self._viewport.set_active_op_refs(
-            [(ref.layer_name, ref.entity_id) for ref in op.geometry_refs]
-        )
+        refs = {(ref.layer_name, ref.entity_id) for ref in op.geometry_refs}
+        self._viewport.set_active_op_refs(list(refs))
+        self._update_tree_active_op_highlight(refs)
+
+    def _update_tree_active_op_highlight(
+        self, active_refs: set[tuple[str, str]]
+    ) -> None:
+        """Tint tree entity rows whose entities belong to the active op.
+
+        Uses the same green as the viewport's active-op overlay so
+        both surfaces visually agree: "this entity is part of the
+        currently-selected operation". Foreground colour only — we
+        don't touch Qt's selection state, since that's owned by the
+        user's click / Shift+click interaction and would clash with
+        the Shift+A / Shift+R flow that needs viewport selection to
+        stay independent.
+        """
+        active_brush = QBrush(COLOR_ACTIVE_OP_MEMBER)
+        # Default brush (no colour set) returns to the theme default.
+        default_brush = QBrush()
+        for i in range(self._tree.topLevelItemCount()):
+            top = self._tree.topLevelItem(i)
+            if top is None:
+                continue
+            for j in range(top.childCount()):
+                child = top.child(j)
+                if child is None:
+                    continue
+                ref = child.data(0, Qt.ItemDataRole.UserRole)
+                if not ref or ref[0] != "entity":
+                    continue
+                key = (ref[1], ref[2])
+                child.setForeground(
+                    0, active_brush if key in active_refs else default_brush
+                )
 
     def _update_operation_preview(
         self, op: Operation | None
@@ -793,6 +831,95 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_selection = False
         self._refresh_action_state()
+
+    def _on_tree_context_menu(self, position: QPoint) -> None:
+        """Right-click in the tree → context menu by item type.
+
+        Entity rows get Add-to / Remove-from active operation (enabled
+        only when an op is currently selected). Operation rows get
+        Duplicate / Delete, a shortcut for the same-named menu-bar
+        actions.
+
+        Target of an Add/Remove: if the right-clicked entity is part
+        of the current tree selection, act on the whole selection
+        (same multi-select convention Qt uses for other file-manager-
+        style lists). Otherwise, act on just the right-clicked item —
+        the user's intent is clearest when right-click-and-act.
+        """
+        item = self._tree.itemAt(position)
+        if item is None:
+            return
+        ref: _TreeRef = item.data(0, Qt.ItemDataRole.UserRole)
+        if not ref:
+            return
+        global_pos = self._tree.viewport().mapToGlobal(position)
+
+        if ref[0] == "entity":
+            self._show_tree_entity_menu(ref, global_pos)
+        elif ref[0] == "operation":
+            self._show_tree_operation_menu(ref, global_pos)
+
+    def _show_tree_entity_menu(
+        self, right_clicked_ref: _TreeRef, global_pos: QPoint
+    ) -> None:
+        _, layer_name, entity_id = right_clicked_ref
+        op = self._currently_selected_operation()
+
+        selected_refs = self._tree_entity_selection()
+        if (layer_name, entity_id) in selected_refs:
+            target_refs = sorted(selected_refs)
+        else:
+            target_refs = [(layer_name, entity_id)]
+
+        menu = QMenu(self)
+        act_add = menu.addAction("Add to active operation")
+        act_remove = menu.addAction("Remove from active operation")
+        # Both disabled if there's no active op — the action is
+        # "apply to the currently-selected operation", and without one
+        # there's nothing to target.
+        act_add.setEnabled(op is not None)
+        act_remove.setEnabled(op is not None)
+
+        chosen = menu.exec(global_pos)
+        if chosen is None or op is None:
+            return
+        if chosen is act_add:
+            self._add_refs_to_op(op, target_refs)
+        elif chosen is act_remove:
+            self._remove_refs_from_op(op, target_refs)
+
+    def _show_tree_operation_menu(
+        self, right_clicked_ref: _TreeRef, global_pos: QPoint
+    ) -> None:
+        _, op_id = right_clicked_ref
+        # Route through the existing QActions so enable state + undo
+        # stack bookkeeping happen in one place. Select the right-
+        # clicked op first so the actions (which read
+        # ``_currently_selected_operation``) target it.
+        self._select_operation_in_tree(op_id)
+
+        menu = QMenu(self)
+        act_duplicate = menu.addAction(
+            self._action_duplicate_operation.text()
+        )
+        act_delete = menu.addAction(self._action_delete_operation.text())
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        if chosen is act_duplicate:
+            self._action_duplicate_operation.trigger()
+        elif chosen is act_delete:
+            self._action_delete_operation.trigger()
+
+    def _tree_entity_selection(self) -> set[tuple[str, str]]:
+        """Return the (layer, entity_id) set currently selected in the tree."""
+        selected: set[tuple[str, str]] = set()
+        for item in self._tree.selectedItems():
+            ref = item.data(0, Qt.ItemDataRole.UserRole)
+            if ref and ref[0] == "entity":
+                selected.add((ref[1], ref[2]))
+        return selected
 
     def _on_viewport_context_menu(self, widget_pos: QPointF) -> None:
         """Right-click in the viewport → build and show a Select-Similar menu.
@@ -1022,8 +1149,24 @@ class MainWindow(QMainWindow):
         op = self._currently_selected_operation()
         if op is None:
             return
-        selection = list(self._viewport.selection)
-        if not selection:
+        self._add_refs_to_op(op, list(self._viewport.selection))
+
+    def _on_remove_from_active_op(self) -> None:
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        self._remove_refs_from_op(op, list(self._viewport.selection))
+
+    def _add_refs_to_op(
+        self, op: Operation, refs: list[tuple[str, str]]
+    ) -> None:
+        """Append (layer, entity_id) pairs to ``op.geometry_refs``.
+
+        Used by both Shift+A (viewport selection) and the tree
+        context menu (tree entity selection). Existing refs are
+        skipped so the action is idempotent on a mixed selection.
+        """
+        if not refs:
             return
         op_id = op.id
         op_name = op.name
@@ -1035,7 +1178,7 @@ class MainWindow(QMainWindow):
             existing = {
                 (r.layer_name, r.entity_id) for r in target.geometry_refs
             }
-            for layer_name, entity_id in selection:
+            for layer_name, entity_id in refs:
                 if (layer_name, entity_id) in existing:
                     continue
                 target.geometry_refs.append(
@@ -1043,17 +1186,21 @@ class MainWindow(QMainWindow):
                 )
                 existing.add((layer_name, entity_id))
 
-        self._do_action(f"Add {len(selection)} to {op_name}", mutate)
+        self._do_action(f"Add {len(refs)} to {op_name}", mutate)
 
-    def _on_remove_from_active_op(self) -> None:
-        op = self._currently_selected_operation()
-        if op is None:
-            return
-        selection = set(self._viewport.selection)
-        if not selection:
+    def _remove_refs_from_op(
+        self, op: Operation, refs: list[tuple[str, str]]
+    ) -> None:
+        """Drop (layer, entity_id) pairs from ``op.geometry_refs``.
+
+        Mirror of ``_add_refs_to_op``. Refs not present in the op are
+        silently ignored — again keeps the action idempotent.
+        """
+        if not refs:
             return
         op_id = op.id
         op_name = op.name
+        to_remove = set(refs)
 
         def mutate(project: Project) -> None:
             target = next((o for o in project.operations if o.id == op_id), None)
@@ -1061,10 +1208,10 @@ class MainWindow(QMainWindow):
                 return
             target.geometry_refs = [
                 r for r in target.geometry_refs
-                if (r.layer_name, r.entity_id) not in selection
+                if (r.layer_name, r.entity_id) not in to_remove
             ]
 
-        self._do_action(f"Remove {len(selection)} from {op_name}", mutate)
+        self._do_action(f"Remove {len(refs)} from {op_name}", mutate)
 
     def _on_delete_operation(self) -> None:
         op = self._currently_selected_operation()

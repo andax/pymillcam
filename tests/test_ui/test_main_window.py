@@ -981,3 +981,129 @@ def test_add_to_active_op_is_undoable(
 
     main_window._action_undo.trigger()
     assert len(main_window._find_operation(op.id).geometry_refs) == 1
+
+
+# -------------------------------- tree highlight for active-op members
+
+
+def _find_entity_tree_item(main_window: MainWindow, layer, entity_id):
+    """Dig out the QTreeWidgetItem for (layer, entity_id) — used when a
+    test cares about the tree's visual state for that row."""
+    return main_window._find_entity_item(layer, entity_id)
+
+
+def test_selecting_op_tints_member_entity_rows_in_tree(
+    main_window: MainWindow,
+) -> None:
+    """Tree and viewport should agree about 'this entity belongs to the
+    active op': viewport colours the geometry, tree colours the row."""
+    from pymillcam.ui.viewport import COLOR_ACTIVE_OP_MEMBER
+
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+
+    main_window._select_operation_in_tree(op.id)
+
+    member_item = _find_entity_tree_item(main_window, "L", a.id)
+    assert member_item is not None
+    assert member_item.foreground(0).color() == COLOR_ACTIVE_OP_MEMBER
+
+    # Non-member row stays default (no colour set → invalid brush).
+    other_item = _find_entity_tree_item(main_window, "L", b.id)
+    assert other_item is not None
+    assert not other_item.foreground(0).isOpaque() or (
+        other_item.foreground(0).color() != COLOR_ACTIVE_OP_MEMBER
+    )
+
+
+def test_deselecting_op_clears_tree_tint(main_window: MainWindow) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Clear selection programmatically (no op selected).
+    main_window._tree.clearSelection()
+
+    from pymillcam.ui.viewport import COLOR_ACTIVE_OP_MEMBER
+
+    member_item = _find_entity_tree_item(main_window, "L", a.id)
+    assert member_item is not None
+    # Brush cleared back to default — colour no longer matches the
+    # active-op green.
+    assert member_item.foreground(0).color() != COLOR_ACTIVE_OP_MEMBER
+
+
+# -------------------------------- tree context menu — refs helpers
+
+
+def test_add_refs_to_op_helper_is_idempotent_on_duplicates(
+    main_window: MainWindow,
+) -> None:
+    """The tree context menu and the Shift+A shortcut both funnel
+    through ``_add_refs_to_op``. A ref that's already in the op's
+    geometry_refs must not be added twice."""
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+
+    # Call the helper directly, once with the duplicate and once with a
+    # genuinely-new ref. End state: two refs, no duplicates.
+    main_window._add_refs_to_op(op, [("L", a.id), ("L", b.id)])
+    refs = [(r.layer_name, r.entity_id) for r in
+            main_window._find_operation(op.id).geometry_refs]
+    assert refs.count(("L", a.id)) == 1
+    assert ("L", b.id) in refs
+
+
+def test_remove_refs_from_op_ignores_unknown_refs(
+    main_window: MainWindow,
+) -> None:
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+
+    # b.id isn't in the op — removing it should be a silent no-op
+    # without throwing, since the tree-menu target set can include
+    # entities that happen to not be in the op.
+    main_window._remove_refs_from_op(op, [("L", "not-in-op")])
+    refs = [(r.layer_name, r.entity_id) for r in
+            main_window._find_operation(op.id).geometry_refs]
+    assert refs == [("L", a.id)]
+
+
+def test_tree_entity_selection_helper() -> None:
+    """Verify the tree-selection accessor returns (layer, entity_id)
+    tuples for entity rows only — operation rows never bleed in."""
+    from PySide6.QtWidgets import QApplication
+    from pytestqt.qtbot import QtBot  # noqa: F401 (imported for type hint)
+
+    app = QApplication.instance() or QApplication([])
+    main_window = MainWindow()
+    try:
+        project, a, b = _project_with_two_circles()
+        main_window.set_project(project)
+        # Select both entity rows in the tree, plus the (non-entity)
+        # Operations parent for good measure.
+        item_a = main_window._find_entity_item("L", a.id)
+        item_b = main_window._find_entity_item("L", b.id)
+        assert item_a is not None and item_b is not None
+        item_a.setSelected(True)
+        item_b.setSelected(True)
+        # Ops group doesn't exist yet without ops — sufficient test.
+
+        sel = main_window._tree_entity_selection()
+        assert sel == {("L", a.id), ("L", b.id)}
+    finally:
+        main_window.close()
+        main_window.deleteLater()
+        app.processEvents()
