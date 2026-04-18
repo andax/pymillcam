@@ -355,6 +355,211 @@ def test_disabling_peck_override_sets_peck_depth_to_none(
     assert op.peck_depth is None
 
 
+# ---------- Tool dropdown -----------------------------------------------
+
+
+def _library_with(*tools):
+    from pymillcam.core.tool_library import ToolLibrary
+
+    lib = ToolLibrary(tools=list(tools))
+    if tools:
+        lib.default_tool_id = tools[0].id
+    return lib
+
+
+def _lib_tool(name: str, *, diameter: float = 3.0, rpm: int = 18000,
+              feed_xy: float = 1200.0, feed_z: float = 300.0):
+    from pymillcam.core.tools import CuttingData, Tool, ToolShape
+
+    t = Tool(name=name, shape=ToolShape.ENDMILL)
+    t.geometry["diameter"] = diameter
+    t.cutting_data["default"] = CuttingData(
+        spindle_rpm=rpm, feed_xy=feed_xy, feed_z=feed_z,
+    )
+    return t
+
+
+def test_tool_combo_is_disabled_when_no_op_bound(panel: PropertiesPanel) -> None:
+    """The combo would have nothing to act on without a bound op; keep
+    it disabled so a stray click can't try to mutate a None controller."""
+    assert not panel._tool_combo.isEnabled()
+
+
+def test_tool_combo_lists_library_tools(panel: PropertiesPanel) -> None:
+    panel.set_tool_library(
+        _library_with(_lib_tool("3mm flat"), _lib_tool("6mm rougher", diameter=6.0))
+    )
+    # Two library tools + the trailing "(Custom)" entry.
+    assert panel._tool_combo.count() == 3
+    names = [
+        panel._tool_combo.itemData(i)
+        for i in range(panel._tool_combo.count())
+    ]
+    assert names[:2] == ["3mm flat", "6mm rougher"]
+    # Custom entry carries userData=None so name-lookups skip it.
+    assert names[2] is None
+
+
+def test_tool_combo_selects_entry_matching_bound_op(
+    panel: PropertiesPanel,
+) -> None:
+    """Binding an op whose tool has a library-matching name should
+    auto-select that library entry in the combo — the user sees which
+    library tool the op is using without any extra click."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    panel.set_tool_library(_library_with(_lib_tool("3mm flat")))
+    tc = ToolController(tool_number=1, tool=Tool(name="3mm flat"))
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    assert panel._tool_combo.currentData() == "3mm flat"
+
+
+def test_tool_combo_shows_custom_when_no_library_match(
+    panel: PropertiesPanel,
+) -> None:
+    from pymillcam.core.tools import Tool, ToolController
+
+    panel.set_tool_library(_library_with(_lib_tool("3mm flat")))
+    tc = ToolController(
+        tool_number=1, tool=Tool(name="homemade 2mm")
+    )
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    # Fallback to the (Custom) entry whose userData is None.
+    assert panel._tool_combo.currentData() is None
+
+
+def test_picking_library_tool_replaces_tool_controller_tool(
+    panel: PropertiesPanel, qtbot: QtBot
+) -> None:
+    """Primary workflow: switch the bound op to a different library
+    tool via the dropdown — the op's ToolController ends up with the
+    library tool's geometry and cutting data."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    lib = _library_with(
+        _lib_tool("starter", diameter=3.0),
+        _lib_tool("rougher", diameter=8.0, rpm=20000, feed_xy=2500.0, feed_z=800.0),
+    )
+    panel.set_tool_library(lib)
+    tc = ToolController(tool_number=1, tool=Tool(name="starter"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    # Pick the second library tool by setting the combo to its userData
+    # match; use the display-text route so we exercise the same signal
+    # chain the Qt UI would trigger.
+    target_idx = panel._find_combo_index_by_name("rougher")
+    assert target_idx >= 0
+    with qtbot.waitSignal(panel.operation_changed, timeout=500):
+        panel._tool_combo.setCurrentIndex(target_idx)
+
+    assert tc.tool.name == "rougher"
+    assert tc.tool.geometry["diameter"] == pytest.approx(8.0)
+    assert tc.spindle_rpm == 20000
+    assert tc.feed_xy == pytest.approx(2500.0)
+    assert tc.feed_z == pytest.approx(800.0)
+
+
+def test_picking_library_tool_refreshes_form_diameter(
+    panel: PropertiesPanel,
+) -> None:
+    """The profile form's tool_diameter widget reads from the embedded
+    tool. After the dropdown swaps the tool, that widget must reflect
+    the new diameter — otherwise the user sees stale geometry and gets
+    confused."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    lib = _library_with(
+        _lib_tool("starter", diameter=3.0),
+        _lib_tool("rougher", diameter=8.0),
+    )
+    panel.set_tool_library(lib)
+    tc = ToolController(tool_number=1, tool=Tool(name="starter"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    panel._tool_combo.setCurrentIndex(
+        panel._find_combo_index_by_name("rougher")
+    )
+
+    assert panel._profile_form.tool_diameter.value() == pytest.approx(8.0)
+
+
+def test_picking_custom_is_a_noop(panel: PropertiesPanel) -> None:
+    """Selecting the ``(Custom)`` entry must not mutate the bound
+    ToolController — it's a display state, not an action."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    panel.set_tool_library(_library_with(_lib_tool("starter")))
+    tc = ToolController(tool_number=1, tool=Tool(name="starter"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+    before_id = tc.tool.id
+
+    # Last entry is the (Custom) label.
+    panel._tool_combo.setCurrentIndex(panel._tool_combo.count() - 1)
+
+    # Tool is unchanged — same identity, same diameter.
+    assert tc.tool.id == before_id
+    assert tc.tool.geometry["diameter"] == pytest.approx(3.0)
+
+
+def test_picking_library_tool_gives_distinct_id(
+    panel: PropertiesPanel,
+) -> None:
+    """Projects stay self-contained: the dropdown copies the library
+    tool (fresh id) rather than referencing it, so editing the
+    library later can't retroactively mutate the op's tool."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    lib_tool = _lib_tool("starter")
+    panel.set_tool_library(_library_with(lib_tool))
+    tc = ToolController(tool_number=1, tool=Tool(name="placeholder"))
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    panel._tool_combo.setCurrentIndex(
+        panel._find_combo_index_by_name("starter")
+    )
+
+    assert tc.tool.id != lib_tool.id
+
+
+def test_set_tool_library_after_bind_refreshes_combo(
+    panel: PropertiesPanel,
+) -> None:
+    """When the user edits the library via Tools > Library…, the new
+    set_tool_library call should update the combo to show the edited
+    list. Newly-added tools appear, deleted tools vanish."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    lib_v1 = _library_with(_lib_tool("starter"))
+    panel.set_tool_library(lib_v1)
+    tc = ToolController(tool_number=1, tool=Tool(name="starter"))
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    # Library version 2 replaces "starter" with "rougher".
+    lib_v2 = _library_with(_lib_tool("rougher", diameter=8.0))
+    panel.set_tool_library(lib_v2)
+
+    names = [
+        panel._tool_combo.itemData(i)
+        for i in range(panel._tool_combo.count() - 1)  # skip (Custom)
+    ]
+    assert names == ["rougher"]
+    # Op's tool is still named "starter", which no longer has a library
+    # match, so the combo falls back to (Custom).
+    assert panel._tool_combo.currentData() is None
+
+
 def test_pocket_profile_signals_are_routed_by_type(
     panel: PropertiesPanel, qtbot: QtBot
 ) -> None:

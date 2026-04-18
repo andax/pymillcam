@@ -174,6 +174,7 @@ class MainWindow(QMainWindow):
         self._properties = PropertiesPanel(self)
         self._properties.setObjectName("properties")
         self._properties.operation_changed.connect(self._on_operation_edited)
+        self._properties.set_tool_library(self._tool_library)
 
         dock = QDockWidget("Properties", self)
         dock.setObjectName("properties_dock")
@@ -951,6 +952,11 @@ class MainWindow(QMainWindow):
                 f"Saved in-memory but could not write to disk:\n{exc}",
             )
         self._tool_library = new_library
+        # Refresh the Properties panel combo so its entries reflect the
+        # edited library. If the currently bound op's tool was renamed
+        # in the library (unlikely but possible), the sync falls back
+        # to "(Custom)" until the user re-picks.
+        self._properties.set_tool_library(self._tool_library)
 
     def _tool_controller_for(
         self, op: Operation
