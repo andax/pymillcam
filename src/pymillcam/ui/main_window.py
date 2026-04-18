@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QPoint, QPointF, Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -92,6 +92,38 @@ _TreeRef = tuple[str, ...]
 # disambiguate duplicated-op names: "Drill 1" → "Drill 1 (copy)" →
 # "Drill 1 (copy 2)" → "Drill 1 (copy 3)", instead of three rows all
 # named "Drill 1" in the tree.
+class _LayersOpsTree(QTreeWidget):
+    """QTreeWidget that does *not* change selection on right-click.
+
+    Qt's default behaviour for ``QAbstractItemView`` is to move the
+    selection to the right-clicked row on ``mousePressEvent``, even
+    for the right mouse button. In our tree that deselects the active
+    operation the moment the user tries to right-click an entity —
+    which is precisely the path the user most wants, because the
+    context menu's "Add/Remove to active operation" needs an active
+    op to target.
+
+    Intercepting right-button presses here preserves whatever was
+    selected when the user aimed their cursor. The normal
+    ``customContextMenuRequested`` signal still fires from the
+    delayed ``contextMenuEvent`` that Qt synthesises after the
+    release, so MainWindow's handler runs as usual.
+
+    Left-click behaviour is unchanged — we defer to ``super`` for
+    any non-right-click press so shift/ctrl multi-select, drag-
+    scroll, and everything else keep working.
+    """
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.RightButton:
+            # Accept without calling super → Qt skips the default
+            # "move selection to the clicked row" step. The release-
+            # driven context-menu event is unaffected.
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 _COPY_SUFFIX_RE = re.compile(r"^(.*) \(copy(?: (\d+))?\)$")
 
 
@@ -198,7 +230,7 @@ class MainWindow(QMainWindow):
     def _build_tree_dock(self) -> None:
         from PySide6.QtWidgets import QAbstractItemView
 
-        tree = QTreeWidget()
+        tree = _LayersOpsTree()
         tree.setHeaderLabels(["Layers & Operations"])
         tree.setObjectName("tree")
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -862,41 +894,90 @@ class MainWindow(QMainWindow):
     def _show_tree_entity_menu(
         self, right_clicked_ref: _TreeRef, global_pos: QPoint
     ) -> None:
+        """Build and show the Add/Remove menu for an entity row.
+
+        Target-set rules (Qt file-manager convention):
+          * Right-clicked entity is part of the current tree entity
+            selection → act on the whole selection.
+          * Otherwise → act only on the right-clicked entity.
+
+        Menu-item filtering (the whole point of this round of polish):
+          * Hide ``Add`` when every target is already in the op.
+          * Hide ``Remove`` when no target is in the op.
+          * For a mixed multi-select, show both; the Add action
+            adds only the missing refs, Remove removes only the
+            present ones — counts appear in the labels so the user
+            sees what each action will do.
+
+        No active op → no menu. The user's first step has to be
+        picking an op via left-click; right-clicking an entity with
+        nothing to target would be misleading.
+        """
         _, layer_name, entity_id = right_clicked_ref
         op = self._currently_selected_operation()
+        if op is None:
+            return
 
         selected_refs = self._tree_entity_selection()
         if (layer_name, entity_id) in selected_refs:
-            target_refs = sorted(selected_refs)
+            targets = sorted(selected_refs)
         else:
-            target_refs = [(layer_name, entity_id)]
+            targets = [(layer_name, entity_id)]
+
+        op_members = {(r.layer_name, r.entity_id) for r in op.geometry_refs}
+        to_add = [r for r in targets if r not in op_members]
+        to_remove = [r for r in targets if r in op_members]
 
         menu = QMenu(self)
-        act_add = menu.addAction("Add to active operation")
-        act_remove = menu.addAction("Remove from active operation")
-        # Both disabled if there's no active op — the action is
-        # "apply to the currently-selected operation", and without one
-        # there's nothing to target.
-        act_add.setEnabled(op is not None)
-        act_remove.setEnabled(op is not None)
+        # Label varies on whether we're acting on one entity or many.
+        is_single = len(targets) == 1
+        act_add: QAction | None = None
+        act_remove: QAction | None = None
+        if to_add:
+            label = (
+                "Add to active operation"
+                if is_single
+                else f"Add {len(to_add)} to active operation"
+            )
+            act_add = menu.addAction(label)
+        if to_remove:
+            label = (
+                "Remove from active operation"
+                if is_single
+                else f"Remove {len(to_remove)} from active operation"
+            )
+            act_remove = menu.addAction(label)
+
+        if menu.isEmpty():
+            # Shouldn't happen — every target is either in or out of op,
+            # so at least one of to_add / to_remove is non-empty. Guard
+            # anyway so we never exec a zero-action menu.
+            return
 
         chosen = menu.exec(global_pos)
-        if chosen is None or op is None:
+        if chosen is None:
             return
         if chosen is act_add:
-            self._add_refs_to_op(op, target_refs)
+            self._add_refs_to_op(op, to_add)
         elif chosen is act_remove:
-            self._remove_refs_from_op(op, target_refs)
+            self._remove_refs_from_op(op, to_remove)
 
     def _show_tree_operation_menu(
         self, right_clicked_ref: _TreeRef, global_pos: QPoint
     ) -> None:
+        """Build and show the Duplicate/Delete menu for an op row.
+
+        The menu targets the **right-clicked** op, not the currently
+        tree-selected one. That way right-clicking op B while op A is
+        selected deletes / duplicates B — matching every file manager
+        the user has already internalised. We don't change the tree's
+        selection either (the subclass suppresses selection change on
+        right-click), so the user's editing context stays intact.
+        """
         _, op_id = right_clicked_ref
-        # Route through the existing QActions so enable state + undo
-        # stack bookkeeping happen in one place. Select the right-
-        # clicked op first so the actions (which read
-        # ``_currently_selected_operation``) target it.
-        self._select_operation_in_tree(op_id)
+        op = self._find_operation(op_id)
+        if op is None:
+            return
 
         menu = QMenu(self)
         act_duplicate = menu.addAction(
@@ -908,9 +989,9 @@ class MainWindow(QMainWindow):
         if chosen is None:
             return
         if chosen is act_duplicate:
-            self._action_duplicate_operation.trigger()
+            self._duplicate_op(op)
         elif chosen is act_delete:
-            self._action_delete_operation.trigger()
+            self._delete_op(op)
 
     def _tree_entity_selection(self) -> set[tuple[str, str]]:
         """Return the (layer, entity_id) set currently selected in the tree."""
@@ -1217,15 +1298,34 @@ class MainWindow(QMainWindow):
         op = self._currently_selected_operation()
         if op is None:
             return
+        self._delete_op(op)
+
+    def _delete_op(self, op: Operation) -> None:
+        """Delete a specific op by id. Shared by the menu-bar action,
+        the keyboard shortcut, and the tree context menu — the latter
+        passes the right-clicked op directly so it works on an op the
+        user hasn't left-clicked."""
         target_id = op.id
 
         def mutate(project: Project) -> None:
-            project.operations = [o for o in project.operations if o.id != target_id]
+            project.operations = [
+                o for o in project.operations if o.id != target_id
+            ]
 
         self._do_action("Delete operation", mutate)
 
     def _on_duplicate_operation(self) -> None:
-        """Clone the currently-selected op.
+        """Entry point for the Ctrl+Shift+D QAction — duplicates the
+        currently-tree-selected op. See :meth:`_duplicate_op` for the
+        actual cloning semantics.
+        """
+        op = self._currently_selected_operation()
+        if op is None:
+            return
+        self._duplicate_op(op)
+
+    def _duplicate_op(self, op: Operation) -> None:
+        """Clone a specific op.
 
         Primary use cases:
           * Multi-step drilling — spot / pilot / final cycles on the
@@ -1243,16 +1343,18 @@ class MainWindow(QMainWindow):
           * The same geometry_refs (references the same entities;
             editing either op's geometry assignment separately is the
             Phase 2 "edit op geometry" path, not this one).
+          * A ``" (copy)"`` / ``" (copy N)"`` suffix on the name so
+            the tree disambiguates copies from their originals.
 
         The duplicate is appended to the end of ``project.operations``
         and selected in the tree so the user can start editing it
-        immediately.
+        immediately. Called from the menu-bar action, keyboard
+        shortcut, *and* the tree's right-click context menu — the
+        latter passes the right-clicked op directly, which can be a
+        different op than the currently-selected one.
         """
         from uuid import uuid4
 
-        op = self._currently_selected_operation()
-        if op is None:
-            return
         source_tc = self._tool_controller_for(op)
         new_op_id_box: list[str] = []
 

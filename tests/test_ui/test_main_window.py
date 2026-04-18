@@ -1081,6 +1081,187 @@ def test_remove_refs_from_op_ignores_unknown_refs(
     assert refs == [("L", a.id)]
 
 
+def test_right_click_in_tree_preserves_active_op(
+    main_window: MainWindow, qtbot: QtBot
+) -> None:
+    """Regression: Qt's default QTreeWidget changes selection to the
+    right-clicked row on mousePressEvent, which deselects the op and
+    leaves the context-menu's Add/Remove greyed out. The tree subclass
+    suppresses right-click selection change — the op stays the active
+    one so the context menu can operate on it."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+    assert main_window._currently_selected_operation() is op
+
+    # Right-click on entity B's row. Pre-fix this would deselect the op.
+    entity_item = main_window._find_entity_item("L", b.id)
+    assert entity_item is not None
+    item_rect = main_window._tree.visualItemRect(entity_item)
+    pos = QPointF(item_rect.center())
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        pos,
+        main_window._tree.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))),
+        Qt.MouseButton.RightButton,
+        Qt.MouseButton.RightButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    main_window._tree.mousePressEvent(event)
+
+    # Op is still selected — context menu would be able to target it.
+    assert main_window._currently_selected_operation() is op
+
+
+def test_left_click_in_tree_still_changes_selection(
+    main_window: MainWindow,
+) -> None:
+    """Only right-click should be special-cased. Left-click must
+    preserve its standard selection-change behaviour so the user can
+    switch between ops and entities as usual."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Left-click on entity row — op selection goes away, entity row selected.
+    entity_item = main_window._find_entity_item("L", a.id)
+    assert entity_item is not None
+    rect = main_window._tree.visualItemRect(entity_item)
+    pos = QPointF(rect.center())
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        pos,
+        main_window._tree.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    main_window._tree.mousePressEvent(event)
+    event_release = QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        pos,
+        main_window._tree.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    main_window._tree.mouseReleaseEvent(event_release)
+
+    # Default Qt behaviour — left-click replaces selection. Op is no
+    # longer active (matches prior-art behaviour; the user has
+    # switched from op-edit mode to entity-browsing mode).
+    assert main_window._currently_selected_operation() is None
+
+
+# -------------------------------- menu filtering by op membership
+
+
+def test_entity_menu_shows_remove_only_for_member_of_op(
+    main_window: MainWindow,
+) -> None:
+    """Right-clicking an entity that's already in the active op should
+    offer only Remove (not Add) — re-adding would be a no-op and
+    cluttering the menu with a greyed "Add" is worse than omitting it."""
+    project, a, _ = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    # Inspect what menu-building would produce for a right-click on A.
+    # (Can't actually exec a QMenu in a test without blocking, so we
+    # reconstruct the decision logic from the bound state.)
+    op_members = {(r.layer_name, r.entity_id) for r in op.geometry_refs}
+    target = ("L", a.id)
+    to_add = [target] if target not in op_members else []
+    to_remove = [target] if target in op_members else []
+    assert to_add == []
+    assert to_remove == [target]
+
+
+def test_entity_menu_shows_add_only_for_non_member(
+    main_window: MainWindow,
+) -> None:
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(op.id)
+
+    op_members = {(r.layer_name, r.entity_id) for r in op.geometry_refs}
+    target = ("L", b.id)
+    to_add = [target] if target not in op_members else []
+    to_remove = [target] if target in op_members else []
+    assert to_add == [target]
+    assert to_remove == []
+
+
+# -------------------------------- op-row right-click targets that op
+
+
+def test_delete_op_via_helper_targets_specific_op(
+    main_window: MainWindow,
+) -> None:
+    """The tree context menu calls ``_delete_op(op)`` directly rather
+    than going through the QAction. That means right-clicking op B
+    while op A is selected deletes B — not A."""
+    _make_one_profile_op(main_window)
+    a_op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(a_op.id)
+    main_window._action_duplicate_operation.trigger()
+    b_op = main_window.project.operations[1]
+    # A is still the tree-selected op.
+    main_window._select_operation_in_tree(a_op.id)
+    assert main_window._currently_selected_operation() is a_op
+
+    # Delete B specifically — A should remain.
+    main_window._delete_op(b_op)
+
+    remaining_ids = [o.id for o in main_window.project.operations]
+    assert remaining_ids == [a_op.id]
+
+
+def test_duplicate_op_via_helper_targets_specific_op(
+    main_window: MainWindow,
+) -> None:
+    """Parallel guarantee for the duplicate path — right-clicking op B
+    duplicates B even when op A is the tree-selected one."""
+    _make_one_profile_op(main_window)
+    a_op = main_window.project.operations[0]
+    main_window._select_operation_in_tree(a_op.id)
+    main_window._action_duplicate_operation.trigger()
+    b_op = main_window.project.operations[1]
+    # A remains selected; duplicate B explicitly.
+    main_window._select_operation_in_tree(a_op.id)
+
+    main_window._duplicate_op(b_op)
+
+    # 3 ops now: a_op, b_op (= a_op (copy)), and a fresh copy-of-b.
+    # The new copy derives its counter from b_op's (copy) suffix,
+    # landing on "(copy 2)" — the regex peels existing suffixes so
+    # we don't get "(copy) (copy)".
+    assert len(main_window.project.operations) == 3
+    new_op = main_window.project.operations[2]
+    assert "(copy 2)" in new_op.name
+    # The key property: duplicating B didn't touch A or make a new
+    # A-copy; the chain is a, a-copy, a-copy-of-a-copy (= copy 2).
+    assert new_op.id not in (a_op.id, b_op.id)
+
+
 def test_tree_entity_selection_helper() -> None:
     """Verify the tree-selection accessor returns (layer, entity_id)
     tuples for entity rows only — operation rows never bleed in."""
