@@ -518,7 +518,8 @@ def test_duplicate_preserves_fields_but_fresh_id(
     main_window: MainWindow,
 ) -> None:
     """Duplicate carries forward every field the user set except the
-    op.id (distinct identity) and tool_controller_id (fresh TC)."""
+    op.id (distinct identity), tool_controller_id (fresh TC), and
+    name (suffix disambiguates in the tree)."""
     _make_one_profile_op(main_window)
     original = main_window.project.operations[0]
     # Tweak the original so we can tell they're real copies rather than
@@ -530,13 +531,45 @@ def test_duplicate_preserves_fields_but_fresh_id(
 
     duplicate = main_window.project.operations[1]
     assert duplicate.id != original.id
-    assert duplicate.name == original.name  # user renames in Properties if desired
     assert duplicate.cut_depth == pytest.approx(-7.25)
     assert [
         (ref.layer_name, ref.entity_id) for ref in duplicate.geometry_refs
     ] == [
         (ref.layer_name, ref.entity_id) for ref in original.geometry_refs
     ]
+
+
+def test_duplicate_name_is_distinct_from_original(
+    main_window: MainWindow,
+) -> None:
+    """Tree-visible regression: three copies of one op must NOT all
+    read "Drill 1" in the tree. The first duplicate gets a
+    ``(copy)`` suffix; subsequent duplicates of the same op chain
+    their counters without stacking ``(copy) (copy)``."""
+    _make_one_profile_op(main_window)
+    original = main_window.project.operations[0]
+    original_name = original.name
+    main_window._select_operation_in_tree(original.id)
+
+    main_window._action_duplicate_operation.trigger()
+    first = main_window.project.operations[1]
+    assert first.name == f"{original_name} (copy)"
+
+    main_window._select_operation_in_tree(first.id)
+    main_window._action_duplicate_operation.trigger()
+    second = main_window.project.operations[2]
+    assert second.name == f"{original_name} (copy 2)"
+
+    main_window._select_operation_in_tree(original.id)
+    main_window._action_duplicate_operation.trigger()
+    third = main_window.project.operations[3]
+    # Duplicating the ORIGINAL again — the first (copy) slot is taken,
+    # so the new entry slides to (copy 2) — also taken — then (copy 3).
+    assert third.name == f"{original_name} (copy 3)"
+
+    # All four names are distinct.
+    names = [o.name for o in main_window.project.operations]
+    assert len(set(names)) == len(names)
 
 
 def test_duplicate_gets_its_own_tool_controller(main_window: MainWindow) -> None:

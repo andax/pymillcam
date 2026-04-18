@@ -10,6 +10,7 @@ Open Project round-trips the project as JSON.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,37 @@ from pymillcam.ui.viewport import Viewport
 #   ("ops_group",)                          — top-level "Operations" parent
 #   ("operation", operation_id)             — operation row under that parent
 _TreeRef = tuple[str, ...]
+
+# Matches an operation name ending in " (copy)" or " (copy N)". Used to
+# disambiguate duplicated-op names: "Drill 1" → "Drill 1 (copy)" →
+# "Drill 1 (copy 2)" → "Drill 1 (copy 3)", instead of three rows all
+# named "Drill 1" in the tree.
+_COPY_SUFFIX_RE = re.compile(r"^(.*) \(copy(?: (\d+))?\)$")
+
+
+def _next_duplicate_name(
+    original_name: str, existing_names: set[str]
+) -> str:
+    """Return a unique copy-of-``original_name`` that isn't in ``existing_names``.
+
+    * ``"Drill 1"`` → ``"Drill 1 (copy)"`` (first duplicate)
+    * ``"Drill 1 (copy)"`` → ``"Drill 1 (copy 2)"`` (duplicate of a duplicate)
+    * Collision: starts from ``(copy)`` and counts up until a name is
+      free. Never grows a suffix chain ``(copy) (copy)`` — the regex
+      peels an existing ``(copy N)`` suffix before adding a new one.
+    """
+    match = _COPY_SUFFIX_RE.match(original_name)
+    if match:
+        base = match.group(1)
+        n = int(match.group(2)) if match.group(2) else 1
+    else:
+        base = original_name
+        n = 0
+    while True:
+        n += 1
+        candidate = f"{base} (copy)" if n == 1 else f"{base} (copy {n})"
+        if candidate not in existing_names:
+            return candidate
 
 
 class MainWindow(QMainWindow):
@@ -1102,10 +1134,14 @@ class MainWindow(QMainWindow):
 
             # Now the op itself. ``model_copy(deep=True)`` handles
             # geometry_refs (list of pydantic models) cleanly.
+            new_name = _next_duplicate_name(
+                op.name, {o.name for o in project.operations}
+            )
             new_op = op.model_copy(
                 deep=True,
                 update={
                     "id": uuid4().hex,
+                    "name": new_name,
                     "tool_controller_id": new_tc.tool_number,
                 },
             )
