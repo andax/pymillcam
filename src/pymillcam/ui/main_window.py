@@ -907,7 +907,12 @@ class MainWindow(QMainWindow):
         lib_tool = self._tool_library.default_tool()
         if lib_tool is not None:
             from uuid import uuid4
-            tool = lib_tool.model_copy(deep=True, update={"id": uuid4().hex})
+            # library_id points back to the source; id is fresh so the
+            # per-op copy doesn't collide with the library entry.
+            tool = lib_tool.model_copy(
+                deep=True,
+                update={"id": uuid4().hex, "library_id": lib_tool.id},
+            )
             cd = tool.cutting_data.get("default")
             return ToolController(
                 tool_number=next_number,

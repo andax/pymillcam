@@ -26,14 +26,23 @@ class CuttingData(BaseModel):
 class Tool(BaseModel):
     """A physical cutting tool with geometry and cutting data.
 
-    ``id`` is a stable identifier used by the ToolLibrary to reference
-    a specific tool across sessions and to dedupe imports. Defaults to
-    a UUID hex on construction; projects loaded from disk without an
-    ``id`` field get one assigned at validation time, so older ``.pmc``
-    files still load cleanly.
+    ``id`` is this tool instance's stable identifier (per-op copy in a
+    project, or per-entry in the library).
+
+    ``library_id`` points back at the library tool this one was copied
+    from, or is ``None`` for a tool that never came from the library /
+    was explicitly switched to "Custom" in the Properties panel. That
+    field — not name matching — is what the Tool dropdown uses to
+    decide whether the op is pinned to a library entry. It survives
+    save/load, so a reopened project still knows which tools are
+    library-backed and which aren't.
+
+    Both ``id`` and ``library_id`` have Pydantic default values so
+    pre-existing ``.pmc`` files (with neither field) still load.
     """
     version: int = 1
     id: str = Field(default_factory=lambda: uuid4().hex)
+    library_id: str | None = None
     name: str
     shape: ToolShape = ToolShape.ENDMILL
     geometry: dict[str, float | int] = Field(default_factory=lambda: {

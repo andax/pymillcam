@@ -104,6 +104,22 @@ class OperationFormBase(QWidget):
         finally:
             self._suspend_signals = False
 
+    def set_tool_editable(self, editable: bool) -> None:
+        """Enable or disable tool-related form widgets.
+
+        Called by :class:`PropertiesPanel` to lock tool fields when the
+        bound op is pinned to a library tool — prevents the dropdown
+        label and the actual tool geometry from silently diverging.
+        Re-enabled when the user picks ``(Custom)``.
+
+        Default implementation toggles ``self.tool_diameter`` if the
+        subclass exposes one. Subclasses with richer tool UIs (shape
+        picker, flute count, etc.) override to cover them too.
+        """
+        widget = getattr(self, "tool_diameter", None)
+        if widget is not None:
+            widget.setEnabled(editable)
+
     # -- Abstract -----------------------------------------------------
 
     def populate(
@@ -268,122 +284,133 @@ class PropertiesPanel(QWidget):
         """Handle a user pick in the Tool combo.
 
         Picking a library tool replaces the bound op's ToolController
-        fields in place: the tool itself is a deep copy of the library
-        entry (with a fresh ``id`` so project / library identities stay
-        distinct), and ``spindle_rpm`` / ``feed_xy`` / ``feed_z`` are
-        seeded from the library tool's ``cutting_data["default"]``
-        (falling back to the controller's current values if no default
-        entry exists). Then the form is re-bound so its widgets refresh.
+        fields in place:
 
-        Picking ``(Custom)`` is a no-op — it's a display state meaning
-        "the current tool isn't in the library", not an action.
+        * ``tc.tool`` becomes a deep copy of the library entry with a
+          fresh ``id`` (per-op identity distinct from the library's)
+          and ``library_id`` set to the library tool's ``id`` so the
+          pinning survives save / load.
+        * ``spindle_rpm`` / ``feed_xy`` / ``feed_z`` are seeded from
+          the library tool's ``cutting_data["default"]`` when present.
+        * The form is re-bound so tool-dependent widgets refresh, then
+          the tool widgets are **locked** — a library-backed op's
+          tool can't be tweaked ad-hoc without explicitly switching to
+          ``(Custom)`` first.
 
-        The slot receives the combo's display text (``"name  (d mm)"``)
-        which is formatted for humans; we match by the plain tool name
-        stored in ``currentData()`` so the diameter-suffix doesn't
-        have to be round-tripped exactly.
+        Picking ``(Custom)`` clears ``library_id`` on the op's tool and
+        unlocks the tool widgets so the user can edit freely. The tool
+        values themselves are left untouched — the user starts editing
+        from whatever state the op was in.
         """
         if self._suspend_tool_signals:
-            return
-        name = self._tool_combo.currentData()
-        if name is None:  # (Custom) entry — or nothing selected
             return
         tc = self._tool_controller
         op = self._operation
         if tc is None or op is None:
             return
-        lib_tool = next(
-            (t for t in self._tool_library.tools if t.name == name), None
-        )
-        if lib_tool is None:
+        form = self._forms.get(type(op))
+        lib_id = self._tool_combo.currentData()
+
+        if lib_id is None:
+            # (Custom) — unpin so the user can edit, but don't mutate
+            # tool values. Only emit operation_changed if state actually
+            # changed so a no-op reselection doesn't churn the undo
+            # stack / preview.
+            changed = tc.tool.library_id is not None
+            tc.tool.library_id = None
+            if form is not None:
+                form.set_tool_editable(True)
+            if changed:
+                self.operation_changed.emit()
             return
-        # Replace the tool embedded in the controller. A fresh ``id``
-        # keeps project + library identities distinct so future library
-        # edits never retroactively mutate this op's tool.
-        tc.tool = lib_tool.model_copy(deep=True, update={"id": uuid4().hex})
+
+        lib_tool = self._tool_library.find(lib_id)
+        if lib_tool is None:
+            return  # stale combo data — shouldn't happen in practice
+        tc.tool = lib_tool.model_copy(
+            deep=True,
+            update={"id": uuid4().hex, "library_id": lib_tool.id},
+        )
         cd = tc.tool.cutting_data.get("default")
         if cd is not None:
             tc.spindle_rpm = cd.spindle_rpm
             tc.feed_xy = cd.feed_xy
             tc.feed_z = cd.feed_z
-        # Re-populate the form so the tool_diameter spinbox (and any
-        # other tool-dependent widget) reflects the new library values.
-        form = self._forms.get(type(op))
         if form is not None:
             form.bind(op, tc)
+            form.set_tool_editable(False)
         self.operation_changed.emit()
 
     # -- Tool combo maintenance --------------------------------------
 
     def _rebuild_tool_combo(self) -> None:
-        """Populate the combo with library tool names + ``(Custom)`` trailer.
+        """Populate the combo with library entries + ``(Custom)`` trailer.
 
-        Preserves the current selection label if the same name is still
-        in the rebuilt list, otherwise falls back to syncing from the
-        bound op.
+        Each combo item stores the library tool's ``id`` as userData;
+        lookups match on that id so two library tools with the same
+        name coexist without ambiguity, and a tool rename doesn't
+        break the op's dropdown selection.
         """
         self._suspend_tool_signals = True
         try:
-            current = self._tool_combo.currentText()
             self._tool_combo.clear()
             for tool in self._tool_library.tools:
                 diameter = float(tool.geometry.get("diameter", 0.0))
                 display = f"{tool.name}  ({diameter:g} mm)"
-                # Store the plain name as userData so lookups by name
-                # don't depend on the diameter-suffix formatting.
-                self._tool_combo.addItem(display, userData=tool.name)
+                self._tool_combo.addItem(display, userData=tool.id)
             self._tool_combo.addItem(_CUSTOM_TOOL_LABEL, userData=None)
-            # Attempt to re-select by userData (plain name) so the
-            # diameter-suffix doesn't break the restore when the tool's
-            # diameter was edited in the library.
-            idx = self._find_combo_index_by_name(
-                self._extract_tool_name(current)
-            )
-            if idx >= 0:
-                self._tool_combo.setCurrentIndex(idx)
         finally:
             self._suspend_tool_signals = False
 
     def _sync_tool_combo_to_op(self) -> None:
-        """Select the combo entry whose name matches the bound op's tool.
+        """Match combo selection to the bound op's ``tool.library_id``.
 
-        Falls back to ``(Custom)`` when no library tool carries the same
-        name as the op's tool — this is the "your op's tool is not in
-        the library, or has a name that doesn't match" display.
+        Falls through to ``(Custom)`` when the op's tool has no
+        ``library_id``, or when that id points at a tool that's no
+        longer in the library (e.g. user deleted it). Also toggles the
+        form's tool-field editability: library-backed → locked,
+        custom → editable.
         """
         self._suspend_tool_signals = True
         try:
             tc = self._tool_controller
+            op = self._operation
+            form = self._forms.get(type(op)) if op is not None else None
+
             if tc is None:
-                self._tool_combo.setCurrentText(_CUSTOM_TOOL_LABEL)
-                return
-            idx = self._find_combo_index_by_name(tc.tool.name)
-            if idx >= 0:
-                self._tool_combo.setCurrentIndex(idx)
-            else:
-                # Last entry is (Custom) by construction.
                 self._tool_combo.setCurrentIndex(
-                    self._tool_combo.count() - 1
+                    self._tool_combo.count() - 1  # (Custom)
                 )
+                if form is not None:
+                    # No controller — ``populate`` already disabled the
+                    # tool widgets; leave them that way.
+                    pass
+                return
+
+            lib_id = tc.tool.library_id
+            if lib_id is not None:
+                idx = self._find_combo_index_by_library_id(lib_id)
+                if idx >= 0:
+                    self._tool_combo.setCurrentIndex(idx)
+                    if form is not None:
+                        form.set_tool_editable(False)
+                    return
+                # library_id set but the library no longer has that
+                # tool — fall through to (Custom).
+
+            # Custom mode: last combo entry, editable fields.
+            self._tool_combo.setCurrentIndex(self._tool_combo.count() - 1)
+            if form is not None:
+                form.set_tool_editable(True)
         finally:
             self._suspend_tool_signals = False
 
-    def _find_combo_index_by_name(self, name: str) -> int:
-        """Return the combo index whose userData equals ``name``, or -1."""
+    def _find_combo_index_by_library_id(self, library_id: str) -> int:
+        """Return the combo index whose userData equals ``library_id``, or -1."""
         for i in range(self._tool_combo.count()):
-            if self._tool_combo.itemData(i) == name:
+            if self._tool_combo.itemData(i) == library_id:
                 return i
         return -1
-
-    @staticmethod
-    def _extract_tool_name(display: str) -> str:
-        """Strip the trailing ``(d mm)`` from a combo display label.
-
-        Used when we need to compare a combo entry text (with diameter
-        suffix) to a raw tool name. Robust to missing suffixes.
-        """
-        idx = display.rfind("  (")
-        return display[:idx] if idx >= 0 else display
 
 
 # ---------------------------------------------------------------- profile form
