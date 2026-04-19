@@ -1503,6 +1503,46 @@ def test_move_preserves_selection_on_moved_op(main_window: MainWindow) -> None:
     assert main_window._currently_selected_operation().id == target_id
 
 
+def test_new_project_seeds_machine_from_library_default(
+    main_window: MainWindow,
+) -> None:
+    """When the library has a default machine, ``_make_new_project``
+    copies it into ``project.machine`` with a fresh id and
+    ``library_id`` pointing back at the source."""
+    from pymillcam.core.machine import MachineDefinition
+    from pymillcam.core.machine_library import MachineLibrary
+
+    source = MachineDefinition(name="Shop floor", controller="grbl")
+    source.macros["program_start"] = "(SHOP)\nG21 G90"
+    library = MachineLibrary()
+    library.add(source)
+    library.default_machine_id = source.id
+    main_window._machine_library = library
+
+    project = main_window._make_new_project()
+
+    assert project.machine.name == "Shop floor"
+    assert project.machine.controller == "grbl"
+    assert project.machine.macros["program_start"] == "(SHOP)\nG21 G90"
+    # Fresh identity — editing the project machine won't affect the
+    # library entry via shared id.
+    assert project.machine.id != source.id
+    assert project.machine.library_id == source.id
+
+
+def test_new_project_without_library_default_uses_builtin(
+    main_window: MainWindow,
+) -> None:
+    """An empty machine library falls through to the built-in
+    ``MachineDefinition()`` defaults."""
+    from pymillcam.core.machine_library import MachineLibrary
+
+    main_window._machine_library = MachineLibrary()
+    project = main_window._make_new_project()
+    assert project.machine.name == "Default Machine"
+    assert project.machine.library_id is None
+
+
 def test_move_is_undoable(main_window: MainWindow) -> None:
     """Each move pushes one stack entry, so Ctrl+Z reverts the order."""
     _make_two_profile_ops(main_window)

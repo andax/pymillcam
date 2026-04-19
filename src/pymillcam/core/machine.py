@@ -1,4 +1,6 @@
 """Machine definition model."""
+from uuid import uuid4
+
 from pydantic import BaseModel, Field
 
 
@@ -51,6 +53,15 @@ class MachineDefinition(BaseModel):
     load. Users customise per-machine (park moves, probing routines,
     manual-change pauses) by editing the machine definition.
     """
+    # Stable identity — lets ``MachineLibrary`` find an entry by id even
+    # after the user renames it, and lets a project track "which library
+    # machine was this copied from" via ``library_id``.
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    # When the project's machine was seeded from a library entry this
+    # points back at it. None = hand-rolled machine (or pre-library
+    # project). Editing the project machine never retro-propagates to
+    # the library; users apply the update via "Save to library…".
+    library_id: str | None = None
     version: int = 1
     name: str = "Default Machine"
     controller: str = "uccnc"

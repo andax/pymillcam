@@ -94,7 +94,12 @@ def test_load_wrong_schema_raises(tmp_path: Path) -> None:
 
 
 def test_round_trip_empty_project(tmp_path: Path) -> None:
+    """An empty project round-trips through save + load byte-for-byte
+    identical. ``Project()`` generates a fresh ``machine.id`` each
+    time, so the test compares model_dump'd JSON of the same instance
+    rather than two independent ``Project()`` calls."""
     path = tmp_path / "empty.pmc"
-    save_project(Project(), path)
+    original = Project()
+    save_project(original, path)
     restored = load_project(path)
-    assert restored == Project()
+    assert restored == original

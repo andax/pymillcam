@@ -35,6 +35,13 @@ from PySide6.QtWidgets import (
 from pymillcam.core.commands import CommandStack
 from pymillcam.core.containment import build_pocket_regions
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
+from pymillcam.core.machine import MachineDefinition
+from pymillcam.core.machine_library import (
+    MachineLibrary,
+    MachineLibraryLoadError,
+    load_library as load_machine_library,
+    save_library as save_machine_library,
+)
 from pymillcam.core.operations import (
     DrillOp,
     GeometryRef,
@@ -76,6 +83,10 @@ from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post import get_post
 from pymillcam.ui.machine_dialog import MachineDialog
+from pymillcam.ui.machine_library_dialog import (
+    MachineLibraryDialog,
+    default_library_path as default_machine_library_path,
+)
 from pymillcam.ui.preferences_dialog import PreferencesDialog, default_preferences_path
 from pymillcam.ui.properties_panel import PropertiesPanel
 from pymillcam.ui.tool_library_dialog import (
@@ -168,6 +179,8 @@ class MainWindow(QMainWindow):
         self._preferences = self._load_preferences_or_default()
         self._tool_library_path = default_library_path()
         self._tool_library = self._load_tool_library_or_default()
+        self._machine_library_path = default_machine_library_path()
+        self._machine_library = self._load_machine_library_or_default()
         self._project = self._make_new_project()
         self._project_path: Path | None = None
         self._syncing_selection = False
@@ -288,6 +301,9 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
+        self._action_new = QAction("&New", self)
+        self._action_new.setShortcut(QKeySequence.StandardKey.New)
+        self._action_new.triggered.connect(self._on_new_project)
         self._action_open_dxf = QAction("&Open DXF...", self)
         self._action_open_dxf.setShortcut(QKeySequence.StandardKey.Open)
         self._action_open_dxf.triggered.connect(self._on_open_dxf)
@@ -304,9 +320,11 @@ class MainWindow(QMainWindow):
         self._action_exit.setShortcut(QKeySequence.StandardKey.Quit)
         self._action_exit.triggered.connect(self.close)
 
-        file_menu.addAction(self._action_open_dxf)
+        file_menu.addAction(self._action_new)
         file_menu.addSeparator()
+        file_menu.addAction(self._action_open_dxf)
         file_menu.addAction(self._action_open_project)
+        file_menu.addSeparator()
         file_menu.addAction(self._action_save)
         file_menu.addAction(self._action_save_as)
         file_menu.addSeparator()
@@ -323,6 +341,10 @@ class MainWindow(QMainWindow):
         self._action_redo.triggered.connect(self._on_redo)
         self._action_machine = QAction("&Machine...", self)
         self._action_machine.triggered.connect(self._on_edit_machine)
+        self._action_machine_library = QAction("Machine &library...", self)
+        self._action_machine_library.triggered.connect(
+            self._on_edit_machine_library
+        )
         self._action_preferences = QAction("&Preferences...", self)
         self._action_preferences.setShortcut(QKeySequence.StandardKey.Preferences)
         self._action_preferences.triggered.connect(self._on_preferences)
@@ -330,6 +352,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self._action_redo)
         edit_menu.addSeparator()
         edit_menu.addAction(self._action_machine)
+        edit_menu.addAction(self._action_machine_library)
         edit_menu.addAction(self._action_preferences)
 
         tools_menu = menu_bar.addMenu("&Tools")
@@ -1703,6 +1726,36 @@ class MainWindow(QMainWindow):
             )
             return ToolLibrary()
 
+    def _load_machine_library_or_default(self) -> MachineLibrary:
+        """Same pattern as the tool library: tolerate a missing /
+        corrupt file so the app still launches."""
+        try:
+            return load_machine_library(self._machine_library_path)
+        except MachineLibraryLoadError as exc:
+            QMessageBox.warning(
+                self,
+                "Machine library",
+                f"Could not load machine library:\n{exc}\n\n"
+                "Starting with an empty library.",
+            )
+            return MachineLibrary()
+
+    def _on_edit_machine_library(self) -> None:
+        """Open the Machine Library dialog; persist on accept."""
+        dialog = MachineLibraryDialog(self._machine_library, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        new_library = dialog.result_library()
+        try:
+            save_machine_library(new_library, self._machine_library_path)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Machine library",
+                f"Saved in-memory but could not write to disk:\n{exc}",
+            )
+        self._machine_library = new_library
+
     def _on_edit_tool_library(self) -> None:
         """Open the Tool Library dialog; persist on accept."""
         dialog = ToolLibraryDialog(self._tool_library, self)
@@ -1867,6 +1920,18 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- save/load
 
+    def _on_new_project(self) -> None:
+        """Drop the current project for a fresh, blank one.
+
+        Matches the existing Open-Project convention — no "save your
+        changes first?" prompt since a user hitting Ctrl+N has already
+        decided. The new project inherits the machine library's default
+        machine and preferences-derived settings via ``_make_new_project``.
+        """
+        self.set_project(self._make_new_project())
+        self._project_path = None
+        self.statusBar().showMessage("New project", 3000)
+
     def _on_open_project(self) -> None:
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Open Project", "", "PyMillCAM projects (*.pmc);;All files (*)"
@@ -1925,11 +1990,31 @@ class MainWindow(QMainWindow):
             return AppPreferences()
 
     def _make_new_project(self) -> Project:
+        """Assemble a fresh Project carrying preferences-derived defaults
+        and the machine-library's default machine (if any)."""
         return Project(
+            machine=self._default_machine_for_new_project(),
             settings=ProjectSettings(
                 chord_tolerance=self._preferences.default_chord_tolerance_mm
-            )
+            ),
         )
+
+    def _default_machine_for_new_project(self) -> MachineDefinition:
+        """Seed a new project's machine from the library's default entry.
+
+        Returns a deep copy with a fresh ``id`` and ``library_id`` set to
+        the source, so editing the project machine never retro-propagates
+        to the library. Falls back to a vanilla ``MachineDefinition`` if
+        the library has no default (or is empty).
+        """
+        source = self._machine_library.default_machine()
+        if source is None:
+            return MachineDefinition()
+        clone = source.model_copy(deep=True, update={
+            "id": MachineDefinition().id,
+            "library_id": source.id,
+        })
+        return clone
 
     def _on_edit_machine(self) -> None:
         """Open the Machine editor dialog. Changes go through the undo stack

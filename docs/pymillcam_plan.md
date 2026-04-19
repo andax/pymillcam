@@ -660,6 +660,7 @@ pymillcam/
 │       │   ├── selection.py         #   SimilarityMode + find_similar_entities
 │       │   ├── tools.py             #   Tool, ToolController, CuttingData
 │       │   ├── tool_library.py      #   ToolLibrary Pydantic model + atomic JSON IO
+│       │   ├── machine_library.py   #   MachineLibrary Pydantic model + atomic JSON IO
 │       │   ├── fixtures.py          #   FixtureSetup, Clamp                    [planned]
 │       │   └── materials.py         #   MaterialDatabase                       [planned]
 │       │
@@ -715,6 +716,7 @@ pymillcam/
 │       └── ui/                      # PySide6 GUI
 │           ├── box_selection.py     #   Directional box-select + rubber-band
 │           ├── machine_dialog.py    #   Machine editor (name + macros)
+│           ├── machine_library_dialog.py #  Machine library editor
 │           ├── main_window.py       #   Main window, menus, toolbar, command stack,
 │           │                        #   op duplication, tree/viewport unified context menu
 │           ├── preferences_dialog.py #  Stitch / edit-coalesce preferences dialog
@@ -905,11 +907,18 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   substitution inside ``tool_change``). Threaded through the service on
   every generation path (combined, per-op, export). Defaults are
   dialect-neutral so existing projects emit identical G-code on load.
-  Edited via ``Edit → Machine…`` (`ui/machine_dialog`); multi-machine
-  library still future.
-- Machine definition system with a full defaults cascade
-  (machine → project → op) and a machine library for swapping between
-  shops
+  Edited via ``Edit → Machine…`` (`ui/machine_dialog`).
+- ✅ Machine library (April 2026) — `core/machine_library.MachineLibrary`
+  with atomic JSON IO at ``~/.config/PyMillCAM/machine_library.json``,
+  editor dialog (`ui/machine_library_dialog`) with add / duplicate /
+  delete / set-as-default, and automatic seeding: new projects inherit
+  the library's default machine (fresh ``id``, ``library_id`` pointing
+  back at the source) so editing the project's machine never
+  retro-propagates to the library. No "Load from library" picker in
+  the Machine dialog yet — swapping the current project's machine to a
+  different library entry requires opening a new project.
+- Machine defaults cascade (machine → project → op) still future; the
+  library shipped first since it was the bigger user-visible pain.
 - ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`
   + `find_similar_entities` (same layer / same type / same diameter
   within 0.01 mm). Surfaced through the unified entity context menu;

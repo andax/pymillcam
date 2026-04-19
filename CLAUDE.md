@@ -12,6 +12,7 @@ Pure data layer using Pydantic models. No UI dependencies. Serializes to JSON.
 - `operations.py` — Operation base class + ProfileOp, PocketOp, DrillOp, EngraveOp, SurfaceOp, ContourOp
 - `tools.py` — Tool (geometry + cutting data, optional `library_id` linking back to a library entry), ToolController (binds tool to operation with runtime params)
 - `tool_library.py` — `ToolLibrary` Pydantic model + atomic JSON load/save (tmp-write + rename).
+- `machine_library.py` — `MachineLibrary` Pydantic model + atomic JSON load/save; mirrors `tool_library.py`. Default-machine pointer feeds new projects' `project.machine`.
 - `selection.py` — `SimilarityMode` enum + `find_similar_entities` (same layer / same type / same diameter). Pure data; the viewport + main window drive the UX.
 - `containment.py` — Polygon containment tree → (boundary, [islands]) pocket regions.
 - `path_stitching.py` — Weld entity endpoints within tolerance (shared by Operations > Join paths and opt-in auto-stitch).
@@ -53,7 +54,8 @@ Transforms IR → G-code for specific controllers.
 - `wizards/base.py` — `BaseWizard(QWizard)` + `BaseWizardPage` scaffold. `OperationFormPage` reuses the same `OperationFormBase` widget that Properties uses, so forms are defined once and surface in both places.
 - `box_selection.py` — Selection-combine semantics + rubber-band rect.
 - `tool_library_dialog.py` — Library editor (add / duplicate / delete / rename tool entries, atomic save).
-- `machine_dialog.py` — Machine editor (name, controller, program_start / program_end / tool_change macros). Bound to `Project.machine`; edits go through the undo stack.
+- `machine_dialog.py` — Machine editor (name, controller, program_start / program_end / tool_change macros). Bound to `Project.machine`; edits go through the undo stack. Auto-reseeds macro fields to the new controller's defaults when the user switches `uccnc` ↔ `grbl` (if they weren't hand-customised).
+- `machine_library_dialog.py` — App-global machine library editor. List + form + New / Duplicate / Delete / Set-as-default. Atomic JSON IO at `~/.config/PyMillCAM/machine_library.json`. New projects seed `project.machine` from the library's default entry (fresh `id`, `library_id` pointing back at the source).
 - `preferences_dialog.py` — Stitch tolerance + edit-coalesce window + auto-stitch toggle.
 - Operations tree, Select Similar, operation duplication (Ctrl+Shift+D, auto "(copy)" / "(copy N)" suffix), active-op entity highlight, and the unified tree/viewport entity context menu all live in `main_window.py`.
 
@@ -235,18 +237,18 @@ Phase 1). Per-op override via the Properties panel.
   cover (non-tangent line↔arc concave joins, multi-loop / holed contours).
   The fallback path still collapses arcs to chords; track the residual
   cases as they come up.
-- ``MachineDefinition`` is embedded on ``Project.machine`` — one
-  machine per project, edited via ``Edit → Machine…``. A multi-machine
-  library (``MachineLibrary``) isn't built yet; users who swap between
-  machines currently copy the macro text between projects. When the
-  library lands it'll mirror ``ToolLibrary`` (atomic JSON IO + dialog
-  + per-project picker combo).
 - The Machine dialog surfaces only the fields the post actually
   consumes today: name, controller, macros. Other
   ``MachineDefinition`` fields (travel, spindle range, capabilities)
   are persisted on the model but not exposed in the UI — they'll
   appear as features that consume them land (pre-flight validation,
   feed/speed calc).
+- The Machine dialog still edits *the project's* machine in place —
+  there's no "Load from library" picker inside it yet. Users who want
+  to swap the current project's machine to a different library entry
+  have to open a new project (which seeds from the library default) or
+  hand-edit the macros. Adding a picker is a small follow-up when
+  demand surfaces.
 - DXF path stitching is now available two ways: an explicit
   `Operations > Join paths` action that welds the current selection,
   and an opt-in `auto_stitch_on_import` preference that runs the same

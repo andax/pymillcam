@@ -102,10 +102,15 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   included); select the *Operations* group (or nothing) to generate the
   combined program. Right-click an op → **Export G-code…** writes that
   single op to a `.nc` file.
-- **Machine editor.** `Edit → Machine…` opens a dialog bound to the
-  project's machine. Edit the name, controller, and the three macro
-  slots that the post substitutes into the program (preamble,
-  footer, tool change). `{tool_number}` expands inside *Tool change*.
+- **Machine editor + library.** `Edit → Machine…` edits the project's
+  machine — name, controller, and the three macro slots (preamble,
+  footer, tool change) that the post substitutes into the program.
+  `{tool_number}` expands inside *Tool change*. `Edit → Machine
+  library…` opens an app-global library at
+  `~/.config/PyMillCAM/machine_library.json`: add / duplicate / rename
+  / delete machine entries and mark one as the default. New projects
+  inherit the default machine (with a fresh id, so editing the
+  project's copy never retro-propagates to the library).
 - **Active-op geometry editing.** Selecting an op tints its member
   entities (green) in the viewport and the tree. `Shift+A` / `Shift+R`
   add/remove the current viewport selection to the active op — or use
@@ -125,8 +130,10 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- Machine library (multiple saved machines you can switch between; the
-  per-project machine dialog is already in)
+- In-dialog "Load from library" picker in the Machine dialog (the
+  underlying library is in; users just can't swap the current
+  project's machine to a different library entry without starting a
+  new project)
 - Feed/speed calculator (contextual, in the tool picker)
 - FreeCAD `.fctb` / `.fctl` and LinuxCNC tool-table import into the tool library
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place
@@ -187,14 +194,15 @@ automatically. If your DXF was drawn with separate unstitched lines
 `Edit → Preferences → Auto-stitch on DXF import` or run
 `Operations → Join paths` (`Ctrl+J`) on the selected entities afterward.
 
-**2. Configure your machine (one-time).** `Edit → Machine…` opens the
-Machine dialog. Paste your controller's preamble, footer, and
-tool-change sequences into the three macro boxes. The defaults match
-UCCNC's standard behaviour (`G21 G90 G94 G17` / `M5 M30` / `T<n> M6`);
-most shops add a park move and spindle-off routine. Use
-`{tool_number}` inside *Tool change* to insert the target tool
-number — handy for both ATC and manual-change setups. The machine is
-saved with the project so different jobs can target different machines.
+**2. Configure your machine (one-time).** Open `Edit → Machine
+library…`, add a machine, set its controller (`uccnc` or `grbl`),
+paste your preamble / footer / tool-change sequences into the three
+macro boxes, and hit *Set as default*. New projects from then on
+inherit that machine automatically. Use `{tool_number}` inside *Tool
+change* to insert the target tool number — handy for both ATC and
+manual-change setups. The current project's machine is editable via
+`Edit → Machine…` for one-off overrides; those edits stay with the
+project and don't retro-propagate to the library.
 
 **3. Select the geometry for the first operation.** Drag a box in the
 viewport (left-to-right selects fully-contained entities;
@@ -274,6 +282,7 @@ Two things that cross all op types:
 
 | Action | Shortcut |
 | --- | --- |
+| New project | `Ctrl+N` |
 | Open DXF | `Ctrl+O` |
 | Open Project | `Ctrl+Shift+O` |
 | Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
