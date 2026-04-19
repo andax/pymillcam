@@ -712,6 +712,7 @@ pymillcam/
 │       │
 │       └── ui/                      # PySide6 GUI
 │           ├── box_selection.py     #   Directional box-select + rubber-band
+│           ├── machine_dialog.py    #   Machine editor (name + macros)
 │           ├── main_window.py       #   Main window, menus, toolbar, command stack,
 │           │                        #   op duplication, tree/viewport unified context menu
 │           ├── preferences_dialog.py #  Stitch / edit-coalesce preferences dialog
@@ -755,9 +756,9 @@ pymillcam/
 │   │                                #   services, tabs
 │   ├── test_io/                     #   dxf_import, project_io
 │   ├── test_post/                   #   uccnc
-│   └── test_ui/                     #   box_selection, main_window, preferences_dialog,
-│                                    #   properties_panel, viewport, viewport_arc_rendering,
-│                                    #   wizards_base
+│   └── test_ui/                     #   box_selection, machine_dialog, main_window,
+│                                    #   preferences_dialog, properties_panel, tool_library_dialog,
+│                                    #   viewport, viewport_arc_rendering, wizards_base
 │
 ├── docs/
 │   ├── pymillcam_plan.md            #   This document
@@ -890,7 +891,17 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   a library tool locks tool-geometry fields so edits happen in the
   library dialog. Live propagation of library edits to existing ops
   is still future work.
-- Machine definition system with defaults cascade
+- ✅ Machine macros through the post (April 2026) — ``MachineDefinition``
+  now embeds on ``Project.machine``; the post accepts ``program_start``,
+  ``program_end``, ``tool_change`` slots (with ``{tool_number}``
+  substitution inside ``tool_change``). Threaded through the service on
+  every generation path (combined, per-op, export). Defaults are
+  dialect-neutral so existing projects emit identical G-code on load.
+  Edited via ``Edit → Machine…`` (`ui/machine_dialog`); multi-machine
+  library still future.
+- Machine definition system with a full defaults cascade
+  (machine → project → op) and a machine library for swapping between
+  shops
 - ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`
   + `find_similar_entities` (same layer / same type / same diameter
   within 0.01 mm). Surfaced through the unified entity context menu;
@@ -905,6 +916,18 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   selected op, preserves geometry refs and deep-copies the
   `ToolController`. Auto-disambiguated names via
   `(copy)` / `(copy 2)` / `(copy N)` suffix.
+- ✅ Operation reordering (April 2026) — Ctrl+Shift+Up/Down (also in
+  the Operations menu and op-row right-click) swaps an op with its
+  neighbour. Single undo-stack entry; moved op stays selected so
+  chained moves work naturally. Order matters: ops execute top-to-
+  bottom in the generated G-code.
+- ✅ Per-op G-code generation + export (April 2026) — Generate G-code
+  is selection-driven: a single op row selected in the tree produces
+  a standalone program for just that op (with preamble + footer so it
+  runs as-is on the controller); the Operations group (or nothing
+  selected) falls back to the combined program. Op-row right-click
+  gains an **Export G-code…** action that writes the single-op program
+  to a ``.nc`` file.
 - ✅ Tree/viewport unification (April 2026) — selecting an op tints
   its member entity rows in the tree and overlays them in the
   viewport. Right-click (tree or viewport) opens a single dynamic

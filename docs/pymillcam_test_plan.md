@@ -109,7 +109,12 @@ Append rows when human eyeballs have confirmed something works.
   - Safe-height and clearance-plane behavior matches intent
   - Full-circle G3 arcs render as circles (not degenerate)
   - Feed rates switch at the expected moments
-- **M-G to do when machine macros are wired**: confirm `program_start` / `program_end` / `tool_change` macros from `MachineDefinition` emit correctly.
+- **Machine macros** (wired April 2026): automated coverage in
+  `tests/test_post/test_uccnc.py` confirms `program_start` / `program_end`
+  / `tool_change` macros emit as expected with `{tool_number}`
+  substitution. Manual verification — edit the project machine via
+  `Edit → Machine…`, paste shop-specific macros, regenerate, and confirm
+  the preamble / footer / per-op tool-change lines match.
 - **Gap**: we don't yet emit N-numbered lines. Some UCCNC operators prefer them for fault recovery — add an option if requested.
 
 ### Step 5 — Minimal PySide6 window  ✅
