@@ -19,6 +19,8 @@ from shapely.geometry.base import BaseGeometry
 
 from pymillcam.core.segments import (
     DEFAULT_SHADOW_TOLERANCE_MM,
+    ArcSegment,
+    LineSegment,
     Segment,
     segments_to_shapely,
 )
@@ -88,3 +90,45 @@ class GeometryLayer(BaseModel):
 
     def find_entity(self, entity_id: str) -> GeometryEntity | None:
         return next((e for e in self.entities if e.id == entity_id), None)
+
+
+def describe_entity(entity: GeometryEntity) -> str:
+    """Short human-readable description of an entity's dimensions.
+
+    Covers the common shapes users want to verify at a glance:
+
+    * POINT → ``Point (x, y)``
+    * Full-circle arc → ``Circle Ø d mm``
+    * Partial arc → ``Arc r=… mm, sweep=… °``
+    * Single line → ``Line … mm``
+    * Closed chain → ``Closed contour, … mm``
+    * Open chain → ``Chain, N segs, … mm``
+
+    Measurements in mm (project units); the caller is free to reformat.
+    """
+    if entity.point is not None:
+        px, py = entity.point
+        return f"Point ({px:.3f}, {py:.3f})"
+    if not entity.segments:
+        return "(empty entity)"
+    if len(entity.segments) == 1:
+        seg = entity.segments[0]
+        if isinstance(seg, LineSegment):
+            return f"Line {seg.length:.3f} mm"
+        if isinstance(seg, ArcSegment):
+            if seg.is_full_circle:
+                return f"Circle Ø {2 * seg.radius:.3f} mm"
+            return (
+                f"Arc r={seg.radius:.3f} mm, "
+                f"sweep={seg.sweep_deg:+.2f}°"
+            )
+    total_length = sum(s.length for s in entity.segments)
+    if entity.closed:
+        return (
+            f"Closed contour, {len(entity.segments)} seg, "
+            f"{total_length:.3f} mm"
+        )
+    return (
+        f"Chain, {len(entity.segments)} seg, "
+        f"{total_length:.3f} mm"
+    )

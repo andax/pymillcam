@@ -162,6 +162,14 @@ class Viewport(QWidget):
     # The viewport itself doesn't know what actions belong in the menu —
     # that depends on project state — so the parent owns the QMenu.
     context_menu_requested = Signal(QPointF)
+    # Emitted when the user finishes a two-click measurement. Payload is
+    # ``(p1_x, p1_y, p2_x, p2_y, distance_mm)`` — five floats, simplest
+    # signature that preserves both endpoints so callers can show them
+    # in whatever status-bar format they like without a second signal.
+    distance_measured = Signal(float, float, float, float, float)
+    # Emitted when the user cancels (Escape) a measurement that was
+    # already in progress. Lets MainWindow reset the status-bar prompt.
+    measure_cancelled = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -191,6 +199,13 @@ class Viewport(QWidget):
         # Rendered as a target marker so the user sees where the cut will
         # begin even when the preview overlay is hidden. None = not set.
         self._start_position: tuple[float, float] | None = None
+        # Two-click measurement mode: when active, left-clicks capture
+        # world points (snapping to nearby entity endpoints / centres)
+        # instead of changing the selection. ``_measure_first_point`` is
+        # the first clicked point; the second click emits
+        # ``distance_measured`` and resets the mode.
+        self._measure_mode = False
+        self._measure_first_point: tuple[float, float] | None = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -223,6 +238,24 @@ class Viewport(QWidget):
         see at a glance what geometry the selected op references."""
         self._active_op_refs = set(items)
         self.update()
+
+    def set_measure_mode(self, active: bool) -> None:
+        """Enter / exit two-click distance-measurement mode.
+
+        In measure mode, left-clicks capture world points (with endpoint /
+        centre snap) instead of changing the selection. Exiting discards
+        any half-completed measurement.
+        """
+        self._measure_mode = active
+        self._measure_first_point = None
+        self.setCursor(
+            Qt.CursorShape.CrossCursor if active else Qt.CursorShape.ArrowCursor
+        )
+        self.update()
+
+    @property
+    def is_measuring(self) -> bool:
+        return self._measure_mode
 
     def set_start_position(
         self, position: tuple[float, float] | None
@@ -343,6 +376,30 @@ class Viewport(QWidget):
             return (None, None)
         return best
 
+    def _snap_world(self, widget_pos: QPointF) -> tuple[float, float]:
+        """Return a world XY for ``widget_pos``, snapped to the closest
+        entity key-point if one is inside ``HIT_TEST_TOLERANCE_PX``.
+
+        Key-points are line endpoints, arc endpoints, and arc / circle
+        centres — the fixtures users actually want when measuring
+        slot widths, hole pitches, etc. Raw world position is used when
+        no key-point is close enough.
+        """
+        tolerance_mm = HIT_TEST_TOLERANCE_PX / max(self._scale, 1e-9)
+        wx, wy = self.widget_to_world(widget_pos)
+        best: tuple[float, float] | None = None
+        best_dist = math.inf
+        for layer in self._layers:
+            if not layer.visible:
+                continue
+            for entity in layer.entities:
+                for px, py in _entity_snap_points(entity):
+                    d = math.hypot(px - wx, py - wy)
+                    if d <= tolerance_mm and d < best_dist:
+                        best_dist = d
+                        best = (px, py)
+        return best if best is not None else (wx, wy)
+
     def _compute_bounds(self) -> tuple[float, float, float, float] | None:
         min_x = math.inf
         min_y = math.inf
@@ -393,6 +450,8 @@ class Viewport(QWidget):
                 self._draw_toolpath_preview(painter)
             if self._start_position is not None:
                 self._draw_start_position_marker(painter)
+            if self._measure_first_point is not None:
+                self._draw_measure_first_marker(painter)
             if self._dragging_box:
                 self._draw_drag_box(painter)
         finally:
@@ -642,6 +701,25 @@ class Viewport(QWidget):
         finally:
             painter.restore()
 
+    def _draw_measure_first_marker(self, painter: QPainter) -> None:
+        """Small cyan cross at the first point of an in-progress measurement."""
+        if self._measure_first_point is None:
+            return
+        c = self.world_to_widget(*self._measure_first_point)
+        painter.save()
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(COLOR_TOOLPATH_RAPID, 2.0))
+            r = 6.0
+            painter.drawLine(
+                QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y())
+            )
+            painter.drawLine(
+                QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r)
+            )
+        finally:
+            painter.restore()
+
     def _draw_drag_box(self, painter: QPainter) -> None:
         if self._left_press_widget is None or self._drag_current_widget is None:
             return
@@ -715,6 +793,10 @@ class Viewport(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._measure_mode:
+                self._handle_measure_click(QPointF(event.position()))
+                event.accept()
+                return
             # Defer click vs drag decision until release / movement.
             self._left_press_widget = QPointF(event.position())
             self._dragging_box = False
@@ -754,7 +836,14 @@ class Viewport(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._panning = False
-            self.unsetCursor()
+            # Pan sets ClosedHandCursor on press; restore the mode's
+            # normal cursor rather than just ``unsetCursor`` which would
+            # blow away measure mode's crosshair.
+            self.setCursor(
+                Qt.CursorShape.CrossCursor
+                if self._measure_mode
+                else Qt.CursorShape.ArrowCursor
+            )
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self._left_press_widget is not None:
@@ -785,6 +874,38 @@ class Viewport(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def _handle_measure_click(self, widget_pos: QPointF) -> None:
+        """Process a click while in measurement mode.
+
+        First click stores the snapped world point; second click emits
+        ``distance_measured`` and returns the viewport to normal mode.
+        """
+        snapped = self._snap_world(widget_pos)
+        if self._measure_first_point is None:
+            self._measure_first_point = snapped
+            self.update()
+            return
+        first = self._measure_first_point
+        distance = math.hypot(snapped[0] - first[0], snapped[1] - first[1])
+        self.distance_measured.emit(
+            first[0], first[1], snapped[0], snapped[1], distance
+        )
+        # One-shot: exit measure mode after the second click. Users who
+        # want another measurement re-trigger the action from the menu
+        # or keyboard shortcut.
+        self.set_measure_mode(False)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Escape cancels an in-progress measurement."""
+        if event.key() == Qt.Key.Key_Escape and self._measure_mode:
+            was_in_progress = self._measure_first_point is not None
+            self.set_measure_mode(False)
+            if was_in_progress:
+                self.measure_cancelled.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _finish_box_select(
         self, start: QPointF, end: QPointF, combine: SelectionCombine
@@ -846,6 +967,24 @@ def _distance_to_entity(point: tuple[float, float], entity: GeometryEntity) -> f
     if not entity.segments:
         return math.inf
     return min(_distance_to_segment(point, seg) for seg in entity.segments)
+
+
+def _entity_snap_points(entity: GeometryEntity) -> list[tuple[float, float]]:
+    """Key-points on an entity that the measurement snap prefers.
+
+    Covers the fixtures users actually reach for: POINT coordinates,
+    line endpoints, arc endpoints, and arc / circle centres. The set
+    is intentionally small to keep the snap pass fast on dense DXFs.
+    """
+    if entity.point is not None:
+        return [entity.point]
+    pts: list[tuple[float, float]] = []
+    for seg in entity.segments:
+        pts.append(seg.start)
+        pts.append(seg.end)
+        if isinstance(seg, ArcSegment):
+            pts.append(seg.center)
+    return pts
 
 
 def _distance_to_segment(

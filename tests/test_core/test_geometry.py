@@ -6,7 +6,12 @@ import math
 import pytest
 from shapely.geometry import LineString, Point, Polygon
 
-from pymillcam.core.geometry import EntitySource, GeometryEntity, GeometryLayer
+from pymillcam.core.geometry import (
+    EntitySource,
+    GeometryEntity,
+    GeometryLayer,
+    describe_entity,
+)
 from pymillcam.core.segments import ArcSegment, LineSegment
 
 
@@ -111,3 +116,69 @@ def test_layer_round_trips_via_json() -> None:
     assert restored.source_dxf_path == "/tmp/part.dxf"
     assert len(restored.entities) == 1
     assert math.isclose(restored.entities[0].geom.area, 100.0)
+
+
+# --------------------------------------------------------------- describe_entity
+
+
+def test_describe_point_entity() -> None:
+    entity = GeometryEntity(point=(10.0, 20.0))
+    assert describe_entity(entity) == "Point (10.000, 20.000)"
+
+
+def test_describe_single_line_shows_length() -> None:
+    entity = GeometryEntity(
+        segments=[LineSegment(start=(0, 0), end=(30, 40))], closed=False
+    )
+    # 3-4-5 triangle → length 50.
+    assert describe_entity(entity) == "Line 50.000 mm"
+
+
+def test_describe_full_circle_shows_diameter() -> None:
+    entity = GeometryEntity(
+        segments=[
+            ArcSegment(
+                center=(0, 0), radius=5.0,
+                start_angle_deg=0.0, sweep_deg=360.0,
+            )
+        ],
+        closed=True,
+    )
+    assert describe_entity(entity) == "Circle Ø 10.000 mm"
+
+
+def test_describe_partial_arc_shows_radius_and_sweep() -> None:
+    entity = GeometryEntity(
+        segments=[
+            ArcSegment(
+                center=(0, 0), radius=5.0,
+                start_angle_deg=0.0, sweep_deg=90.0,
+            )
+        ],
+        closed=False,
+    )
+    out = describe_entity(entity)
+    assert "r=5.000 mm" in out
+    assert "sweep=+90.00°" in out
+
+
+def test_describe_closed_contour_shows_total_length() -> None:
+    entity = GeometryEntity(segments=_rect_segments(), closed=True)
+    out = describe_entity(entity)
+    assert "Closed contour" in out
+    assert "4 seg" in out
+    assert "40.000 mm" in out
+
+
+def test_describe_open_chain_shows_length() -> None:
+    entity = GeometryEntity(
+        segments=[
+            LineSegment(start=(0, 0), end=(10, 0)),
+            LineSegment(start=(10, 0), end=(10, 10)),
+        ],
+        closed=False,
+    )
+    out = describe_entity(entity)
+    assert "Chain" in out
+    assert "2 seg" in out
+    assert "20.000 mm" in out

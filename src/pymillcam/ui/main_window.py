@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from pymillcam.core.commands import CommandStack
 from pymillcam.core.containment import build_pocket_regions
-from pymillcam.core.geometry import GeometryEntity, GeometryLayer
+from pymillcam.core.geometry import GeometryEntity, GeometryLayer, describe_entity
 from pymillcam.core.machine import MachineDefinition
 from pymillcam.core.machine_library import (
     MachineLibrary,
@@ -364,7 +364,11 @@ class MainWindow(QMainWindow):
         self._action_fit = QAction("&Fit to View", self)
         self._action_fit.setShortcut("F")
         self._action_fit.triggered.connect(self._viewport.fit_to_view)
+        self._action_measure = QAction("&Measure distance", self)
+        self._action_measure.setShortcut("M")
+        self._action_measure.triggered.connect(self._on_measure_distance)
         view_menu.addAction(self._action_fit)
+        view_menu.addAction(self._action_measure)
         view_menu.addSeparator()
         self._action_show_profile_preview = QAction("Show &profile preview", self)
         self._action_show_profile_preview.setCheckable(True)
@@ -503,14 +507,47 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._action_generate_gcode)
 
     def _build_status_bar(self) -> None:
+        # Entity-dimensions readout. Lives to the left of the coord
+        # label; populated whenever the current selection is exactly one
+        # entity (length / diameter / radius / sweep — whatever's most
+        # useful for that entity type).
+        self._entity_info_label = QLabel("")
+        self._entity_info_label.setObjectName("entity_info_label")
+        self._entity_info_label.setMinimumWidth(200)
+        self.statusBar().addPermanentWidget(self._entity_info_label)
         self._coord_label = QLabel("X: —   Y: —")
         self._coord_label.setObjectName("coord_label")
         self._coord_label.setMinimumWidth(160)
         self.statusBar().addPermanentWidget(self._coord_label)
         self._viewport.mouse_position_changed.connect(self._on_mouse_position_changed)
+        self._viewport.distance_measured.connect(self._on_distance_measured)
+        self._viewport.measure_cancelled.connect(self._on_measure_cancelled)
 
     def _on_mouse_position_changed(self, x: float, y: float) -> None:
         self._coord_label.setText(f"X: {x:8.3f}   Y: {y:8.3f}")
+
+    def _on_measure_distance(self) -> None:
+        """Enter the viewport's two-click measurement mode and prompt
+        the user via the status bar."""
+        self._viewport.set_measure_mode(True)
+        self.statusBar().showMessage(
+            "Measure: click the first point — Esc to cancel", 0
+        )
+
+    def _on_distance_measured(
+        self, x1: float, y1: float, x2: float, y2: float, distance: float
+    ) -> None:
+        dx = x2 - x1
+        dy = y2 - y1
+        self.statusBar().showMessage(
+            f"Distance {distance:.3f} mm   "
+            f"Δx {dx:+.3f}   Δy {dy:+.3f}   "
+            f"({x1:.3f}, {y1:.3f}) → ({x2:.3f}, {y2:.3f})",
+            0,
+        )
+
+    def _on_measure_cancelled(self) -> None:
+        self.statusBar().showMessage("Measurement cancelled", 3000)
 
     # -------------------------------------------------------------- project
 
@@ -955,6 +992,22 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_selection = False
         self._refresh_action_state()
+        self._refresh_entity_info_label(items)
+
+    def _refresh_entity_info_label(
+        self, items: list[tuple[str, str]]
+    ) -> None:
+        """Show per-entity dimensions in the status bar for a single
+        selection; clear when the selection is empty / multi-entity."""
+        if len(items) != 1:
+            self._entity_info_label.setText("")
+            return
+        layer_name, entity_id = items[0]
+        entity = self._find_entity(layer_name, entity_id)
+        if entity is None:
+            self._entity_info_label.setText("")
+            return
+        self._entity_info_label.setText(describe_entity(entity))
 
     def _on_tree_context_menu(self, position: QPoint) -> None:
         """Right-click in the tree → context menu by item type.

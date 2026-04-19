@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 from pytestqt.qtbot import QtBot
 
 from pymillcam.core.geometry import GeometryEntity, GeometryLayer
@@ -431,3 +431,107 @@ def test_right_click_emits_context_menu_requested(
     (emitted_pos,) = sig.args
     assert emitted_pos.x() == pytest.approx(42)
     assert emitted_pos.y() == pytest.approx(17)
+
+
+# ---------------------------------------------------------- measurement mode
+
+
+def test_measure_mode_first_click_stores_point_second_emits(
+    viewport: Viewport, qtbot: QtBot,
+) -> None:
+    """Two clicks in measure mode → ``distance_measured`` carries both
+    world points plus the distance."""
+    viewport.set_layers([_mixed_layer()])
+    viewport.set_measure_mode(True)
+    assert viewport.is_measuring
+
+    # Click somewhere empty so no snap kicks in; use the centre of the
+    # viewport plus a fixed offset.
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    def click(x_widget: float, y_widget: float) -> None:
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(x_widget, y_widget),
+            QPointF(x_widget, y_widget),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        viewport.mousePressEvent(ev)
+
+    with qtbot.waitSignal(viewport.distance_measured, timeout=500) as sig:
+        # First click — no emit yet.
+        click(100, 100)
+        assert viewport._measure_first_point is not None
+        # Second click — emits.
+        click(200, 100)
+
+    x1, y1, x2, y2, distance = sig.args
+    # Widget dx = 100, dy = 0 → world distance = 100 / scale.
+    expected = 100.0 / viewport._scale
+    assert distance == pytest.approx(expected, abs=1e-6)
+    # Exiting mode clears state + cursor.
+    assert not viewport.is_measuring
+    assert viewport._measure_first_point is None
+
+
+def test_measure_mode_escape_cancels_when_in_progress(
+    viewport: Viewport, qtbot: QtBot,
+) -> None:
+    """Esc on a half-completed measurement emits ``measure_cancelled``
+    and leaves the viewport in the default mode."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent, QMouseEvent
+
+    viewport.set_measure_mode(True)
+    # First click to enter "in progress" state.
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(50, 50),
+        QPointF(50, 50),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    viewport.mousePressEvent(press)
+    assert viewport._measure_first_point is not None
+
+    with qtbot.waitSignal(viewport.measure_cancelled, timeout=500):
+        esc = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        viewport.keyPressEvent(esc)
+    assert not viewport.is_measuring
+    assert viewport._measure_first_point is None
+
+
+def test_snap_prefers_entity_endpoint(viewport: Viewport) -> None:
+    """Click near a line endpoint inside the snap tolerance → the
+    snapped world point is exactly the endpoint, not the raw mouse
+    world location."""
+    entity = GeometryEntity(
+        segments=[LineSegment(start=(10.0, 20.0), end=(30.0, 40.0))],
+        closed=False,
+    )
+    layer = GeometryLayer(name="L", entities=[entity])
+    viewport.set_layers([layer])
+    # World (10, 20) is the line's start. Convert to widget coordinates.
+    widget = viewport.world_to_widget(10.0, 20.0)
+    # Nudge by 1 widget pixel — well inside HIT_TEST_TOLERANCE_PX (5).
+    nudged = QPointF(widget.x() + 1.0, widget.y() + 1.0)
+    snapped = viewport._snap_world(nudged)
+    assert snapped == pytest.approx((10.0, 20.0), abs=1e-6)
+
+
+def test_snap_falls_through_to_raw_world_without_nearby_entity(
+    viewport: Viewport,
+) -> None:
+    """No entity nearby → the snap returns the raw widget→world mapping."""
+    viewport.set_layers([])
+    pos = QPointF(400.0, 300.0)
+    expected_world = viewport.widget_to_world(pos)
+    assert viewport._snap_world(pos) == pytest.approx(expected_world, abs=1e-6)

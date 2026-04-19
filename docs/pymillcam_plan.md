@@ -683,7 +683,7 @@ pymillcam/
 │       │   ├── surface.py           #   Surface/facing                         [planned]
 │       │   ├── patterns.py          #   Pattern generators                     [planned]
 │       │   ├── validation.py        #   Z stack + travel + fixture checks      [planned]
-│       │   ├── feeds_speeds.py      #   Feed/speed calculator                  [planned]
+│       │   ├── feeds_speeds.py      #   Feed/speed calculator (Vc / fz formulas + material presets)
 │       │   ├── time_estimate.py     #   Operation time estimation (IR-walker)
 │       │   ├── nesting.py           #   Part nesting / layout                  [planned]
 │       │   └── optimizer.py         #   Toolpath optimization / TSP            [planned]
@@ -715,6 +715,7 @@ pymillcam/
 │       │
 │       └── ui/                      # PySide6 GUI
 │           ├── box_selection.py     #   Directional box-select + rubber-band
+│           ├── feeds_speeds_dialog.py #  Feeds & speeds calculator modal
 │           ├── machine_dialog.py    #   Machine editor (name + macros)
 │           ├── machine_library_dialog.py #  Machine library editor
 │           ├── main_window.py       #   Main window, menus, toolbar, command stack,
@@ -933,7 +934,12 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   feed rates resolved through the cascade. `MainWindow` annotates
   each op row in the tree with `[hh:mm:ss]` and recomputes on
   project change.
-- Integrated feed/speed calculator (contextual, in tool selection flow)
+- ✅ Integrated feed/speed calculator (April 2026) —
+  `core/feeds_speeds.MaterialPreset` + `compute_feeds_speeds`, plus a
+  small `ui/feeds_speeds_dialog` fired by a "Calculate from material…"
+  button in the Tool Library dialog. Ships a dozen hobby-class
+  materials (plywood → stainless); RPM from Vc × 1000 / (π × D), feed
+  from fz × Z × RPM, with a conservative feed_z fallback of feed_xy/3.
 - ✅ Operation duplication (April 2026) — Ctrl+Shift+D clones the
   selected op, preserves geometry refs and deep-copies the
   `ToolController`. Auto-disambiguated names via
@@ -956,7 +962,14 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   menu: Select Similar entries only appear when applicable, per-op
   Add/Remove toggles by current membership, viewport right-click
   hit-tests the cursor first and falls back to current selection.
-- Measurement tools (point-to-point distance, entity dimensions)
+- ✅ Measurement tools (April 2026) — press ``M`` to enter
+  two-click measurement mode; clicks snap to entity endpoints / arc
+  centres within the hit-test tolerance. Status bar shows distance,
+  Δx / Δy, and both endpoints. Selecting a single entity surfaces
+  its dimensions (line length, circle diameter, arc radius + sweep,
+  closed-contour perimeter) in the status bar. Backed by
+  ``core.geometry.describe_entity`` + viewport ``_snap_world`` /
+  ``_handle_measure_click``.
 - ✅ Second post-processor (April 2026) — GRBL. Shares
   ``BasicGcodePost`` with UCCNC; only the dialect-neutral defaults
   differ (``G21 G90`` preamble, ``M5\nM0`` manual-pause tool change,

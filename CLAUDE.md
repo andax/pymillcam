@@ -35,7 +35,7 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `patterns.py` — Pattern generators (rect grid, hex grid, circular array, text) — not yet
 - `tabs.py` — Tab generation (rectangular, triangular, thin-web)
 - `validation.py` — Z stack budget, travel limits, fixture collision checks — not yet
-- `feeds_speeds.py` — Feed/speed calculator — not yet
+- `feeds_speeds.py` — `MaterialPreset` + `compute_feeds_speeds(tool_diameter, flute_count, material)`. Uses Vc × 1000 / (π × D) for RPM and fz × Z × RPM for feed. Ships a built-in table of ~12 hobby-class materials (plywood, MDF, acrylic, aluminium grades, steel, brass, foam). Consumed by the Tool Library dialog's "Calculate from material…" button.
 - `time_estimate.py` — Pure-function operation time estimator (IR-walker over rapid / feed / arc + dwell + tool-change, feed-rate resolution from op cascade). Consumed by `main_window` to annotate ops in the tree.
 - `nesting.py` — Part nesting / layout optimization — not yet
 - `optimizer.py` — Toolpath optimization (tool grouping, rapid minimization, drill TSP) — not yet
@@ -56,6 +56,7 @@ Transforms IR → G-code for specific controllers.
 - `tool_library_dialog.py` — Library editor (add / duplicate / delete / rename tool entries, atomic save).
 - `machine_dialog.py` — Machine editor (name, controller, safe_height, clearance_plane, program_start / program_end / tool_change macros). Bound to `Project.machine`; edits go through the undo stack. Auto-reseeds macro fields to the new controller's defaults when the user switches `uccnc` ↔ `grbl` (if they weren't hand-customised). Optional `library` kwarg surfaces a "Load from library" picker at the top.
 - `machine_library_dialog.py` — App-global machine library editor. List + form + New / Duplicate / Delete / Set-as-default. Atomic JSON IO at `~/.config/PyMillCAM/machine_library.json`. New projects seed `project.machine` from the library's default entry (fresh `id`, `library_id` pointing back at the source).
+- `feeds_speeds_dialog.py` — Small modal: (diameter, flute count, material) → (RPM, feed). Invoked from the Tool Library dialog; writes the result back into the cutting-data fields.
 - `preferences_dialog.py` — Stitch tolerance + edit-coalesce window + auto-stitch toggle.
 - Operations tree, Select Similar, operation duplication (Ctrl+Shift+D, auto "(copy)" / "(copy N)" suffix), active-op entity highlight, and the unified tree/viewport entity context menu all live in `main_window.py`.
 

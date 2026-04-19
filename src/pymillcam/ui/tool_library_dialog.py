@@ -182,6 +182,11 @@ class ToolLibraryDialog(QDialog):
         form.addRow("Shank diameter", self._shank_diameter)
         form.addRow("Flute count", self._flute_count)
         form.addRow(QLabel("<b>Cutting data</b>"))
+        self._btn_calc_feeds_speeds = QPushButton("Calculate from material…")
+        self._btn_calc_feeds_speeds.clicked.connect(
+            self._on_calc_feeds_speeds
+        )
+        form.addRow("", self._btn_calc_feeds_speeds)
         form.addRow("Spindle RPM", self._spindle_rpm)
         form.addRow("Feed XY", self._feed_xy)
         form.addRow("Feed Z", self._feed_z)
@@ -366,6 +371,29 @@ class ToolLibraryDialog(QDialog):
             return
         self._library.default_tool_id = tool.id
         self._rebuild_list(select=self._selected_index)
+
+    def _on_calc_feeds_speeds(self) -> None:
+        """Open the feeds/speeds calculator; on Apply, write the
+        suggested RPM and feed back into the form. The same widgets'
+        ``valueChanged`` signals then propagate the numbers through
+        ``_write_back_plain`` into the selected tool, so no extra
+        bookkeeping is needed here."""
+        from pymillcam.ui.feeds_speeds_dialog import FeedsSpeedsDialog
+
+        dialog = FeedsSpeedsDialog(
+            tool_diameter_mm=self._diameter.value(),
+            flute_count=self._flute_count.value(),
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        rpm, feed = dialog.result()
+        self._spindle_rpm.setValue(rpm)
+        self._feed_xy.setValue(feed)
+        # Feed Z defaults to ~1/3 of feed_xy for a plunge move — safer
+        # than matching the horizontal feed on flat end mills, which
+        # routinely break when plunging. Users can tweak afterwards.
+        self._feed_z.setValue(feed / 3.0)
 
     # ---------------------------------------------------------- result
 

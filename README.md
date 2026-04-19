@@ -120,6 +120,14 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 - **Per-op time estimate.** Each op row in the tree shows an `[hh:mm:ss]`
   estimate (rapids + feeds + arcs + dwell + tool-change), recomputed
   on project change.
+- **Measurement + feeds/speeds.** Press `M` to enter measurement mode,
+  click two points (snaps to entity endpoints / arc centres) to see the
+  distance and XY delta in the status bar. Selecting a single entity
+  shows its dimensions (line length, circle diameter, arc radius +
+  sweep). The Tool Library dialog has a **Calculate from material…**
+  button next to the cutting-data fields: pick a material from the
+  built-in table and it fills in a starting RPM / feed using the
+  classic Vc × 1000 / (π × D) formula.
 - **PySide6 GUI.** 2D viewport with pan / zoom / fit, directional box
   selection (L→R contained, R→L crossing) with `Ctrl`/`Shift` modifiers
   for multi-select, operations tree, Properties panel, G-code output pane,
@@ -132,7 +140,6 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- Feed/speed calculator (contextual, in the tool picker)
 - FreeCAD `.fctb` / `.fctl` and LinuxCNC tool-table import into the tool library
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place
 - Pre-flight safety (Z stack budget, travel, fixture collision)
@@ -287,6 +294,7 @@ Two things that cross all op types:
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Preferences | `Ctrl+,` |
 | Fit to View | `F` |
+| Measure distance | `M` |
 | Join paths | `Ctrl+J` |
 | Add Profile | `Ctrl+P` |
 | Add Pocket | `Ctrl+K` |
