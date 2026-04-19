@@ -882,9 +882,11 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   ``MainWindow`` never learned a new op type; ``engine/drill.py``
   registers itself with ``ToolpathService`` and
   ``@register_form(DrillOp)`` plugs a form into the Properties panel.
-- Edit op geometry refs after creation (currently refs are set at
-  Add-Op time and not editable; viewport should highlight an op's
-  refs and offer Add-to-active-op / Remove-from-active-op actions)
+- ✅ Edit op geometry refs after creation (April 2026) — see the
+  "Tree/viewport unification" entry below. Shift+A / Shift+R and the
+  unified entity context menu both add to / remove from the active op,
+  and the viewport tints an op's member entities so the user can see
+  what's included before editing.
 - ✅ User-selectable contour start position P₀ (April 2026) —
   `engine/common.rotate_closed_chain_to_nearest_point` + a
   ``start_position`` field on ``ProfileOp`` / ``PocketOp``. Right-clicking
