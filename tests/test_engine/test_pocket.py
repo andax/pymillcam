@@ -345,13 +345,6 @@ def test_climb_and_conventional_reverse_each_other() -> None:
     assert sorted(climb_pts) == sorted(conv_pts)
 
 
-def test_unknown_strategy_raises() -> None:
-    project, op, _ = _project_with_rect_pocket()
-    op.strategy = PocketStrategy.SPIRAL
-    with pytest.raises(PocketGenerationError, match="not implemented"):
-        generate_pocket_toolpath(op, project)
-
-
 def test_tool_too_large_raises() -> None:
     project, op, _ = _project_with_rect_pocket(w=10.0, h=3.0, tool_diameter=5.0)
     with pytest.raises(PocketGenerationError, match="tool too large"):
@@ -1526,31 +1519,6 @@ def test_rest_machining_groups_within_tool_center_space() -> None:
                 )
 
 
-# =================================================================== SPIRAL UI
-
-
-def test_spiral_preview_is_empty() -> None:
-    """SPIRAL isn't implemented yet; `compute_pocket_preview` should
-    return an empty list so the viewport doesn't misleadingly draw
-    concentric OFFSET rings for a strategy that will fail at G-code
-    generation. Regression — without the short-circuit, the preview
-    silently falls through to the concentric-ring branch."""
-    entity = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
-    layer = GeometryLayer(name="L", entities=[entity])
-    tc = ToolController(tool_number=1, tool=Tool(name="t"))
-    op = PocketOp(
-        name="P",
-        tool_controller_id=1,
-        geometry_refs=[GeometryRef(layer_name="L", entity_id=entity.id)],
-        cut_depth=-3.0,
-        strategy=PocketStrategy.SPIRAL,
-    )
-    project = Project(
-        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
-    )
-    assert compute_pocket_preview(op, project) == []
-
-
 # ========================================== ZIGZAG multi-region connector safety
 
 
@@ -1708,3 +1676,221 @@ def test_zigzag_unsafe_connector_is_replaced_by_rapid_not_feed() -> None:
         assert xy_rapid.x is not None or xy_rapid.y is not None
         assert z_feed.type is MoveType.FEED
         assert z_feed.z is not None and z_feed.z < 0
+
+
+# ======================================================================= SPIRAL
+
+
+def _spiral_project(
+    *,
+    w: float = 50.0,
+    h: float = 30.0,
+    cut_depth: float = -3.0,
+    stepover: float = 2.0,
+    tool_diameter: float = 3.0,
+    direction: MillingDirection = MillingDirection.CLIMB,
+    ramp: RampConfig | None = None,
+) -> tuple[Project, PocketOp, GeometryEntity]:
+    """Rectangular pocket with SPIRAL strategy. Reuses `_project_with_rect_pocket`
+    and swaps the strategy + optional ramp config."""
+    project, op, entity = _project_with_rect_pocket(
+        w=w, h=h, cut_depth=cut_depth, stepover=stepover,
+        tool_diameter=tool_diameter, direction=direction,
+    )
+    op.strategy = PocketStrategy.SPIRAL
+    if ramp is not None:
+        op.ramp = ramp
+    return project, op, entity
+
+
+def test_spiral_preview_walks_innermost_ring_first() -> None:
+    """SPIRAL preview concatenates the same concentric rings as OFFSET,
+    but in reversed order — so the path starts at the innermost ring
+    (tool enters the pocket's interior, not flush with the wall).
+    """
+    project, op, entity = _spiral_project()
+    rings = _concentric_rings(
+        entity,
+        tool_radius=1.5,
+        stepover=op.stepover,
+        direction=op.direction,
+        chord_tolerance=project.settings.chord_tolerance,
+    )
+    assert len(rings) >= 2, "fixture must have multiple rings to be interesting"
+    preview = compute_pocket_preview(op, project)
+    # First segment of the preview is the first segment of the *innermost*
+    # ring (rings[-1] in OFFSET order).
+    assert preview[0].start == rings[-1][0].start
+    # Last segment of the preview is the last segment of the *outermost*
+    # ring (rings[0] in OFFSET order).
+    assert preview[-1].end == rings[0][-1].end
+
+
+def test_spiral_preview_length_matches_offset() -> None:
+    """SPIRAL and OFFSET cover the same ring set — just reversed. Total
+    segment count in the preview must be identical.
+    """
+    project, op, _ = _spiral_project()
+    spiral_preview = compute_pocket_preview(op, project)
+    op.strategy = PocketStrategy.OFFSET
+    offset_preview = compute_pocket_preview(op, project)
+    assert len(spiral_preview) == len(offset_preview)
+
+
+def test_spiral_toolpath_emits_continuous_path() -> None:
+    """SPIRAL emits one pass per Z level with no retract-between-rings —
+    just feed-at-depth connectors (same as OFFSET's ring chain). The only
+    Z-only rapids are: the initial safe-height retract, the pre-pass
+    descent to clearance, and the final safe-height retract.
+    """
+    project, op, _ = _spiral_project(
+        cut_depth=-1.0,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project.settings.spindle_warmup_s = 0.0
+    op.multi_depth = False
+    tp = generate_pocket_toolpath(op, project)
+
+    # Find the plunge to pass depth — in-body Z-only retracts come after.
+    plunge_idx = next(
+        i for i, ins in enumerate(tp.instructions)
+        if ins.type is MoveType.FEED and ins.z == pytest.approx(-1.0)
+    )
+    body = tp.instructions[plunge_idx + 1 : -1]  # drop final safe retract
+    in_body_retracts = [
+        ins for ins in body
+        if ins.type is MoveType.RAPID and ins.x is None and ins.y is None
+    ]
+    assert in_body_retracts == [], (
+        f"spiral pass body should be continuous feed; got "
+        f"{len(in_body_retracts)} retracts"
+    )
+
+
+def test_spiral_enters_at_innermost_ring_start() -> None:
+    """The pre-pass XY rapid positions the tool above the innermost ring's
+    start — this is where the plunge happens. Contrast with OFFSET, which
+    enters at the outermost ring's start.
+    """
+    project, op, entity = _spiral_project(
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project.settings.spindle_warmup_s = 0.0
+    op.multi_depth = False
+    rings = _concentric_rings(
+        entity, tool_radius=1.5, stepover=op.stepover,
+        direction=op.direction,
+        chord_tolerance=project.settings.chord_tolerance,
+    )
+    innermost_start = rings[-1][0].start
+
+    tp = generate_pocket_toolpath(op, project)
+    # First XY rapid after tool_change is the entry positioning move.
+    entry = next(
+        ins for ins in tp.instructions
+        if ins.type is MoveType.RAPID and ins.x is not None and ins.y is not None
+    )
+    assert entry.x == pytest.approx(innermost_start[0])
+    assert entry.y == pytest.approx(innermost_start[1])
+
+
+def test_spiral_climb_and_conventional_reverse_each_other() -> None:
+    """Direction still applies to every ring in the spiral — CCW climb vs
+    CW conventional for each ring individually. Same invariant as OFFSET.
+    """
+    project_climb, op_climb, _ = _spiral_project(direction=MillingDirection.CLIMB)
+    project_conv, op_conv, _ = _spiral_project(
+        direction=MillingDirection.CONVENTIONAL
+    )
+    climb_preview = compute_pocket_preview(op_climb, project_climb)
+    conv_preview = compute_pocket_preview(op_conv, project_conv)
+    assert len(climb_preview) == len(conv_preview)
+    # At least one segment pair differs — direction changed travel.
+    assert any(
+        c.start != cv.start
+        for c, cv in zip(climb_preview, conv_preview, strict=True)
+    )
+
+
+def test_spiral_multi_depth_emits_one_plunge_per_pass() -> None:
+    """Multi-depth spiral retracts to clearance between passes, then
+    re-enters at the innermost ring's start — same repeat-pattern as
+    OFFSET, just reversed rings per pass.
+    """
+    project, op, _ = _spiral_project(
+        cut_depth=-3.0,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project.settings.spindle_warmup_s = 0.0
+    op.multi_depth = True
+    op.stepdown = 1.0  # → 3 passes at -1, -2, -3
+    tp = generate_pocket_toolpath(op, project)
+
+    z_plunges = [
+        ins for ins in tp.instructions
+        if ins.type is MoveType.FEED and ins.z is not None and ins.z < 0
+        and ins.x is None and ins.y is None
+    ]
+    assert len(z_plunges) == 3
+    assert [ins.z for ins in z_plunges] == pytest.approx([-1.0, -2.0, -3.0])
+
+
+def test_spiral_with_islands_falls_back_to_offset() -> None:
+    """Spiral bridges are straight feed-at-depth moves between consecutive
+    rings — unsafe when the pocket has islands (bridges could cross
+    island material). Island regions fall back to OFFSET emission, so
+    SPIRAL and OFFSET produce identical IR for an island-bearing pocket.
+    """
+    boundary = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
+    island_arc = ArcSegment(
+        center=(20.0, 15.0),
+        radius=5.0,
+        start_angle_deg=0.0,
+        sweep_deg=360.0,
+    )
+    island = GeometryEntity(segments=[island_arc], closed=True)
+    layer = GeometryLayer(name="L", entities=[boundary, island])
+    tc = ToolController(tool_number=1, tool=Tool(name="t"))
+    tc.tool.geometry["diameter"] = 3.0
+
+    def _mkop(strategy: PocketStrategy) -> PocketOp:
+        return PocketOp(
+            name="P",
+            tool_controller_id=1,
+            geometry_refs=[
+                GeometryRef(layer_name="L", entity_id=boundary.id),
+                GeometryRef(layer_name="L", entity_id=island.id),
+            ],
+            cut_depth=-1.0,
+            stepover=1.5,
+            multi_depth=False,
+            strategy=strategy,
+            ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+        )
+
+    op_offset = _mkop(PocketStrategy.OFFSET)
+    op_spiral = _mkop(PocketStrategy.SPIRAL)
+    project = Project(
+        geometry_layers=[layer],
+        tool_controllers=[tc],
+        operations=[op_offset, op_spiral],
+    )
+    project.settings.spindle_warmup_s = 0.0
+
+    offset_tp = generate_pocket_toolpath(op_offset, project)
+    spiral_tp = generate_pocket_toolpath(op_spiral, project)
+
+    # Same number of instructions and same types per position — the IR
+    # is identical because SPIRAL delegates to emit_offset_region when
+    # islands are present.
+    assert len(spiral_tp.instructions) == len(offset_tp.instructions)
+    for o, s in zip(offset_tp.instructions, spiral_tp.instructions, strict=True):
+        assert o.type is s.type
+
+
+def test_spiral_tool_too_large_raises() -> None:
+    """Same sanity check as OFFSET: when the tool is larger than the
+    narrowest dimension, no rings fit and the engine refuses to emit."""
+    project, op, _ = _spiral_project(w=10.0, h=3.0, tool_diameter=5.0)
+    with pytest.raises(PocketGenerationError, match="tool too large"):
+        generate_pocket_toolpath(op, project)

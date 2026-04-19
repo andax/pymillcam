@@ -673,6 +673,7 @@ pymillcam/
 │       │   │   ├── _shared.py        #     Cross-strategy helpers
 │       │   │   ├── offset.py         #     Concentric rings + helix/ramp emit
 │       │   │   ├── rest_machining.py #     V-notch cleanup (OFFSET only)
+│       │   │   ├── spiral.py         #     Reversed OFFSET rings (inner → outer)
 │       │   │   └── zigzag.py         #     Raster strokes + finishing rings
 │       │   ├── profile.py           #   Profile toolpath (offsets, leads, ramp, tabs)
 │       │   ├── services.py          #   ToolpathService facade + op-type registry
@@ -855,7 +856,14 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
     or `QPainterPath.arcTo` (Bézier approximation). Adjacent-arc
     junctions share widget pixels exactly; no hairline gaps on dense
     geometry.
-- Pocket SPIRAL strategy
+- ✅ Pocket SPIRAL strategy — connected OFFSET rings walked inner →
+  outer with feed-at-depth bridges. Single continuous path from the
+  pocket interior outward; no retract between rings, lower cycle time,
+  fewer floor witness marks than OFFSET. Not a morphing Archimedean
+  spiral — each ring is still a closed contour. Islands fall back to
+  OFFSET emission (straight ring-to-ring bridges would otherwise cross
+  uncut island material). Seed = the innermost ring's start, not the
+  pole of inaccessibility.
 - ✅ Drill operation — ``DrillOp`` model with three cycle types:
   **SIMPLE** (G81-equivalent: plunge to depth, retract), **PECK**
   (G83-equivalent: full retract between pecks for chip clearance),

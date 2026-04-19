@@ -27,7 +27,7 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `common.py` — `EngineError` base + shared helpers used by every op type: cascade resolvers (`resolve_tool_controller`, `resolve_entity`, `resolve_stepdown`, `resolve_chord_tolerance`, `resolve_safe_height`, `resolve_clearance`), pass planning (`z_levels`), chain walkers (`chain_is_ccw`, `split_chain_at_length`, `walk_closed_chain`), tangent helpers, and IR-emit primitives (`emit_segment`, `emit_ramp_segments`). Every raising helper takes an `error_cls` so `profile.py` keeps raising `ProfileGenerationError` and `pocket.py` raises `PocketGenerationError` — both subclass `EngineError`, so the UI catches once.
 - `services.py` — `ToolpathService` facade. Dispatches `(op, project)` to preview / toolpath / program generation by op type via a registry (`register_preview`, `register_toolpath`). The UI talks to this, not to individual engine modules. New op types (drill, surface, engrave, …) register themselves — `MainWindow` never dispatches by op type.
 - `profile.py` — Profile toolpath (offsets, lead-in/out, ramp entry, tabs, multi-depth)
-- `pocket/` — Pocket strategies as a subpackage: `__init__.py` dispatches on `op.strategy`, `offset.py` has concentric rings + ramp/helix emit, `zigzag.py` has raster strokes + finishing rings + multi-region connector safety, `rest_machining.py` is the V-notch cleanup pass (OFFSET only), `_shared.py` holds cross-strategy helpers (offset-or-buffer primitive, ring-orientation, ring-chain emit). SPIRAL reserved.
+- `pocket/` — Pocket strategies as a subpackage: `__init__.py` dispatches on `op.strategy`, `offset.py` has concentric rings + ramp/helix emit, `zigzag.py` has raster strokes + finishing rings + multi-region connector safety, `spiral.py` reverses OFFSET rings for an inner → outer continuous path, `rest_machining.py` is the V-notch cleanup pass (OFFSET only), `_shared.py` holds cross-strategy helpers (offset-or-buffer primitive, ring-orientation, ring-chain emit).
 - `drill.py` — Drill cycles (SIMPLE / PECK / CHIP_BREAK). Point-driven; resolves POINT entities, full-circle arcs, and closed contours to drill coordinates. Emits expanded G0/G1 IR (not canned G81/G83) for post-processor portability.
 - `engrave.py` — Engrave and V-carve — not yet
 - `surface.py` — Surface/facing — not yet
@@ -128,10 +128,14 @@ Phase 2 progress (ongoing):
   portability; between-hole traversal stays at clearance, inter-op
   travel uses safe_height. First op added via the April 2026 facade
   architecture — zero dispatch changes in MainWindow.
-- Pocket SPIRAL — not yet. The preview returns empty (matches the
-  generation-time refusal) and the Properties-panel strategy dropdown
-  filters it out, so the UI no longer lies about it. Drop both
-  safeguards when an actual spiral implementation lands.
+- ✅ Pocket SPIRAL (April 2026) — connected OFFSET rings walked
+  inner → outer, with feed-at-depth bridges between consecutive rings.
+  Single continuous path from pocket interior outward; no retract
+  between rings. Not a morphing Archimedean spiral — each ring is
+  still a closed contour. Island regions fall back to OFFSET emission
+  (straight ring-to-ring bridges could cross uncut island material).
+  Seed point is the innermost ring's start (wherever the offsetter
+  places it), not the pole of inaccessibility.
 - ✅ ZIGZAG multi-region connector safety (April 2026) — connectors
   between consecutive strokes now test the midpoint against the
   machinable polygon; unsafe connectors (those crossing into an
@@ -246,12 +250,12 @@ Phase 1). Per-op override via the Properties panel.
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.
 - `engine/pocket/` is now a subpackage with strategy dispatch in
-  `__init__.py` delegating to `offset.py`, `zigzag.py`,
+  `__init__.py` delegating to `offset.py`, `zigzag.py`, `spiral.py`,
   `rest_machining.py`, and `_shared.py`. Test imports of the
   underscore-prefixed helpers (`_concentric_rings`,
   `_concentric_rings_with_islands`, `_zigzag_strokes_and_finishing_ring`,
-  `_helix_fits`) remain stable via re-exports from the package's
-  `__init__.py`.
+  `_helix_fits`, `_spiral_rings`) remain stable via re-exports from the
+  package's `__init__.py`.
 
 ## Test fixtures
 `tests/fixtures/dxf/` holds hand-crafted and generated DXFs that each

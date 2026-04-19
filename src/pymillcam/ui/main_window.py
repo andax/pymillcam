@@ -41,6 +41,7 @@ from pymillcam.core.operations import (
     OffsetSide,
     Operation,
     PocketOp,
+    PocketStrategy,
     ProfileOp,
 )
 from pymillcam.core.path_stitching import stitch_entities
@@ -825,6 +826,35 @@ class MainWindow(QMainWindow):
             self._viewport.clear_profile_preview()
             return
         self._viewport.set_profile_preview(preview)
+        self._maybe_warn_spiral_with_islands(op)
+
+    def _maybe_warn_spiral_with_islands(self, op: Operation) -> None:
+        """Status-bar hint when SPIRAL silently falls back to OFFSET.
+
+        SPIRAL connects consecutive rings with feed-at-depth bridges; those
+        bridges could cross uncut island material, so `emit_spiral_region`
+        delegates to OFFSET when islands are present. Without a visible cue
+        the user sees identical output for both strategies and assumes the
+        combo is broken.
+        """
+        if not isinstance(op, PocketOp) or op.strategy is not PocketStrategy.SPIRAL:
+            return
+        entities: list[GeometryEntity] = []
+        for ref in op.geometry_refs:
+            layer = next(
+                (
+                    layer for layer in self._project.geometry_layers
+                    if layer.name == ref.layer_name
+                ),
+                None,
+            )
+            if layer is None:
+                continue
+            entities.extend(e for e in layer.entities if e.id == ref.entity_id)
+        if any(islands for _boundary, islands in build_pocket_regions(entities)):
+            self.statusBar().showMessage(
+                "SPIRAL falls back to OFFSET for pockets with islands.", 5000
+            )
 
     def _find_operation(
         self, operation_id: str

@@ -127,6 +127,12 @@ COLOR_BOX_CROSSING_LINE = QColor(80, 160, 240)
 ARROW_SIZE_PX = 7.0
 ARROW_MIN_SEGMENT_PX = 24.0
 
+# Entry marker for the profile preview — radius in widget pixels. A filled
+# disc at ``preview[0].start`` so the user can see where the tool plunges
+# (matters most for pocket strategies that share ring geometry but traverse
+# it in opposite directions, e.g. OFFSET vs SPIRAL).
+PREVIEW_START_RADIUS_PX = 5.0
+
 # How close (in widget pixels) the click must be to an entity to hit it.
 HIT_TEST_TOLERANCE_PX = 5.0
 # Pixels of mouse movement required before a left-press becomes a drag.
@@ -486,6 +492,19 @@ class Viewport(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         for seg in self._profile_preview:
             self._draw_direction_arrow(painter, seg)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Entry marker — small filled disc at the first segment's start,
+        # outlined in white so it reads against both the preview color and
+        # the dark background. Tells the user where the tool plunges; the
+        # distinguishing feature between e.g. OFFSET (enters flush with the
+        # wall) and SPIRAL (enters at the pocket interior).
+        start_x, start_y = self._profile_preview[0].start
+        start_px = self.world_to_widget(start_x, start_y)
+        painter.setBrush(COLOR_PROFILE_PREVIEW)
+        painter.setPen(QPen(QColor(240, 240, 240), 1.5))
+        painter.drawEllipse(
+            start_px, PREVIEW_START_RADIUS_PX, PREVIEW_START_RADIUS_PX
+        )
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_toolpath_preview(self, painter: QPainter) -> None:

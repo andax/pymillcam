@@ -6,13 +6,14 @@ the strategy-specific engines are split across sibling modules:
 
 - `offset.py` — concentric inward rings (arc-preserving where possible).
 - `zigzag.py` — parallel raster strokes + finishing contour ring.
+- `spiral.py` — connected OFFSET rings walked inner → outer.
 - `rest_machining.py` — OFFSET-only cleanup of V-notch residuals.
-- `_shared.py` — shared helpers used by both strategies.
+- `_shared.py` — shared helpers used across strategies.
 
 What this does not yet cover:
-- SPIRAL strategy — preview returns empty, `generate_pocket_toolpath`
-  raises `PocketGenerationError`.
 - HELICAL ramp entry on ZIGZAG (falls back to LINEAR, then PLUNGE).
+- SPIRAL with islands falls back to OFFSET emission (bridges between
+  spiral rings would otherwise cross uncut island material).
 """
 from __future__ import annotations
 
@@ -41,6 +42,11 @@ from .offset import (
     compute_offset_preview,
     emit_offset_region,
 )
+from .spiral import (
+    _spiral_rings,
+    compute_spiral_preview,
+    emit_spiral_region,
+)
 from .zigzag import (
     _zigzag_strokes_and_finishing_ring,
     compute_zigzag_preview,
@@ -55,6 +61,7 @@ __all__ = [
     "_concentric_rings",
     "_concentric_rings_with_islands",
     "_helix_fits",
+    "_spiral_rings",
     "_zigzag_strokes_and_finishing_ring",
 ]
 
@@ -63,16 +70,10 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
     """Return the 2D plan-view path the cutter centre will follow.
 
     For OFFSET, concatenates every concentric ring. For ZIGZAG, emits the
-    raster strokes followed by the finishing contour ring. Used by the
-    UI to show a live preview as the user edits operation parameters.
+    raster strokes followed by the finishing contour ring. For SPIRAL,
+    same rings as OFFSET but walked inner → outer. Used by the UI to
+    show a live preview as the user edits operation parameters.
     """
-    # SPIRAL is not implemented. Without this short-circuit, the preview
-    # would fall through to the OFFSET ring branch and draw concentric
-    # rings — wrong strategy, would mislead the user about what G-code
-    # generation will actually produce (it will raise).
-    if op.strategy is PocketStrategy.SPIRAL:
-        return []
-
     tool_controller = _resolve_tool_controller(op, project)
     chord_tolerance = _resolve_chord_tolerance(op, project)
     tool_radius = float(tool_controller.tool.geometry["diameter"]) / 2.0
@@ -82,6 +83,13 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
     ]
     if op.strategy is PocketStrategy.ZIGZAG:
         return compute_zigzag_preview(
+            op,
+            tool_radius=tool_radius,
+            chord_tolerance=chord_tolerance,
+            entities=entities,
+        )
+    if op.strategy is PocketStrategy.SPIRAL:
+        return compute_spiral_preview(
             op,
             tool_radius=tool_radius,
             chord_tolerance=chord_tolerance,
@@ -97,12 +105,6 @@ def compute_pocket_preview(op: PocketOp, project: Project) -> list[Segment]:
 
 def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
     """Generate an IR Toolpath for a single PocketOp within the given Project."""
-    if op.strategy is PocketStrategy.SPIRAL:
-        raise PocketGenerationError(
-            f"Pocket strategy {op.strategy.value!r} is not implemented yet "
-            "— only 'offset' and 'zigzag' are available."
-        )
-
     tool_controller = _resolve_tool_controller(op, project)
     safe_height = _resolve_safe_height(op, project)
     clearance = _resolve_clearance(op, project)
@@ -143,6 +145,17 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
     for boundary, islands in regions:
         if op.strategy is PocketStrategy.ZIGZAG:
             emit_zigzag_region(
+                instructions, boundary, islands,
+                op=op, tool_controller=tool_controller,
+                tool_radius=tool_radius,
+                chord_tolerance=chord_tolerance,
+                stepdown=stepdown,
+                z_levels=z_levels,
+                safe_height=safe_height,
+                clearance=clearance,
+            )
+        elif op.strategy is PocketStrategy.SPIRAL:
+            emit_spiral_region(
                 instructions, boundary, islands,
                 op=op, tool_controller=tool_controller,
                 tool_radius=tool_radius,

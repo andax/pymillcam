@@ -27,17 +27,20 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   conventional direction, multi-depth stepping. Analytical arc-preserving
   offsetter for circles and line+tangent-arc contours (rounded rectangles);
   falls back to Shapely's buffer otherwise.
-- **Pocket toolpath.** Two strategies — **offset** (concentric inward
-  rings, arc-preserving for boundaries the analytical offsetter handles)
-  and **zigzag** (parallel raster strokes with a finishing contour ring,
-  configurable angle). Multi-depth stepping with retract-to-clearance
-  between passes. Ramp entries: **linear** (default — last slice of the
-  first ring, so the full ring cuts flat at pass depth), **helical**
-  (spiral tangent to ring-start); fallback chain helical → linear →
-  plunge. **Islands** (holes inside the pocket) are detected from
-  selection by a containment tree, with retract+rapid between disjoint
-  ring groups. **Rest-machining** cleans up V-notch corners where an
-  island grows close to the boundary. Spiral strategy is follow-up.
+- **Pocket toolpath.** Three strategies — **offset** (concentric inward
+  rings, arc-preserving for boundaries the analytical offsetter handles),
+  **zigzag** (parallel raster strokes with a finishing contour ring,
+  configurable angle), and **spiral** (same rings as offset but walked
+  inner → outer with feed-at-depth bridges, so the path is a single
+  continuous spiral from the pocket interior outward — lower cycle time,
+  fewer floor witness marks). Multi-depth stepping with retract-to-
+  clearance between passes. Ramp entries: **linear** (default — last
+  slice of the first ring, so the full ring cuts flat at pass depth),
+  **helical** (spiral tangent to ring-start); fallback chain helical →
+  linear → plunge. **Islands** (holes inside the pocket) are detected
+  from selection by a containment tree, with retract+rapid between
+  disjoint ring groups. **Rest-machining** cleans up V-notch corners
+  where an island grows close to the boundary.
 - **Drill operation.** Three cycle types: **simple** (one plunge per
   hole), **peck** (full retract between pecks for chip clearance),
   **chip-break** (small in-hole retract to snap the chip). Drill targets
@@ -91,7 +94,6 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- Pocket spiral strategy (offset and zigzag are done)
 - User-selectable contour start position (so lead / ramp marks land in scrap)
 - Machine definition system with defaults cascade (macros wired through the post)
 - Feed/speed calculator (contextual, in the tool picker)
