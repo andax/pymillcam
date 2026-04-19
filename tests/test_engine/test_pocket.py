@@ -174,7 +174,7 @@ def test_generates_tool_change_spindle_and_final_retract() -> None:
     # per toolpath.
     assert MoveType.SPINDLE_OFF not in types
     assert tp.instructions[-1].type is MoveType.RAPID
-    assert tp.instructions[-1].z == project.settings.safe_height
+    assert tp.instructions[-1].z == project.machine.defaults.safe_height
 
 
 def test_spindle_on_is_followed_by_warmup_dwell() -> None:
@@ -237,7 +237,7 @@ def test_multi_depth_retracts_to_clearance_between_passes() -> None:
     project, op, _ = _project_with_rect_pocket(cut_depth=-3.0)
     op.multi_depth = True
     op.stepdown = 1.0
-    clearance = project.settings.clearance_plane
+    clearance = project.machine.defaults.clearance_plane
     tp = generate_pocket_toolpath(op, project)
     # Collect Z rapids that happen between pass plunges.
     plunge_indices = [
@@ -801,7 +801,7 @@ def test_zigzag_toolpath_has_header_and_final_retract() -> None:
     # Spindle-off is the post-processor's job at program end.
     assert MoveType.SPINDLE_OFF not in types
     assert tp.instructions[-1].type is MoveType.RAPID
-    assert tp.instructions[-1].z == project.settings.safe_height
+    assert tp.instructions[-1].z == project.machine.defaults.safe_height
 
 
 def test_zigzag_plunge_single_depth_plunges_once() -> None:
@@ -1083,7 +1083,7 @@ def test_zigzag_multi_depth_retracts_between_passes() -> None:
     project, op, _ = _project_with_rect_zigzag(cut_depth=-3.0)
     op.multi_depth = True
     op.stepdown = 1.0
-    clearance = project.settings.clearance_plane
+    clearance = project.machine.defaults.clearance_plane
     tp = generate_pocket_toolpath(op, project)
     plunge_indices = [
         i for i, ins in enumerate(tp.instructions)
@@ -1583,7 +1583,7 @@ def test_zigzag_retracts_between_disjoint_scan_pieces_across_island() -> None:
     project, op = _zigzag_island_project()
     tp = generate_pocket_toolpath(op, project)
 
-    clearance = project.settings.clearance_plane
+    clearance = project.machine.defaults.clearance_plane
     retracts_during_strokes = [
         ins for ins in tp.instructions
         if ins.type is MoveType.RAPID
@@ -1648,7 +1648,7 @@ def test_zigzag_unsafe_connector_is_replaced_by_rapid_not_feed() -> None:
     project, op = _zigzag_island_project()
     tp = generate_pocket_toolpath(op, project)
 
-    clearance = project.settings.clearance_plane
+    clearance = project.machine.defaults.clearance_plane
     # The very first RAPID z=clearance is the pass entry descent (from
     # safe_height), part of the standard preamble — not a retract. Scan
     # only what follows the first plunge to pass depth.

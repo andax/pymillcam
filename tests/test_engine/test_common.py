@@ -414,3 +414,59 @@ def test_rotate_on_arc_finds_angular_projection() -> None:
 
 def test_rotate_on_empty_chain_returns_empty() -> None:
     assert common.rotate_closed_chain_to_nearest_point([], (0.0, 0.0)) == []
+
+
+# -------------------------- resolve_safe_height / resolve_clearance cascade
+
+
+def _project_for_cascade() -> Project:
+    """Minimal project for cascade tests — we only touch settings +
+    machine.defaults, so no geometry / operations needed."""
+    return Project()
+
+
+def _op(
+    *, safe_height: float | None = None, clearance_plane: float | None = None,
+) -> ProfileOp:
+    return ProfileOp(
+        name="P", safe_height=safe_height, clearance_plane=clearance_plane,
+    )
+
+
+def test_safe_height_cascade_prefers_op_override() -> None:
+    project = _project_for_cascade()
+    project.settings.safe_height = 20.0
+    project.machine.defaults.safe_height = 40.0
+    op = _op(safe_height=7.5)
+    assert common.resolve_safe_height(op, project) == pytest.approx(7.5)
+
+
+def test_safe_height_cascade_falls_through_to_project_setting() -> None:
+    project = _project_for_cascade()
+    project.settings.safe_height = 20.0
+    project.machine.defaults.safe_height = 40.0
+    op = _op()  # no op override
+    assert common.resolve_safe_height(op, project) == pytest.approx(20.0)
+
+
+def test_safe_height_cascade_falls_through_to_machine_default() -> None:
+    """Empty op override + unset project setting → machine default."""
+    project = _project_for_cascade()
+    project.settings.safe_height = None  # explicit inherit
+    project.machine.defaults.safe_height = 40.0
+    op = _op()
+    assert common.resolve_safe_height(op, project) == pytest.approx(40.0)
+
+
+def test_clearance_cascade_matches_safe_height_shape() -> None:
+    project = _project_for_cascade()
+    project.settings.clearance_plane = None
+    project.machine.defaults.clearance_plane = 5.0
+    op = _op()
+    assert common.resolve_clearance(op, project) == pytest.approx(5.0)
+    # Project setting wins over machine.
+    project.settings.clearance_plane = 2.0
+    assert common.resolve_clearance(op, project) == pytest.approx(2.0)
+    # Op override wins over both.
+    op.clearance_plane = 0.5
+    assert common.resolve_clearance(op, project) == pytest.approx(0.5)

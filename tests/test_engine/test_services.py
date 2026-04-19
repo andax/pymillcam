@@ -85,7 +85,7 @@ def test_generate_toolpath_returns_irtoolpath_for_profile_op() -> None:
     assert tp.operation_name == "P"
     # Every toolpath ends by retracting to safe height.
     assert any(
-        i.type is MoveType.RAPID and i.z == project.settings.safe_height
+        i.type is MoveType.RAPID and i.z == project.machine.defaults.safe_height
         for i in tp.instructions
     )
 

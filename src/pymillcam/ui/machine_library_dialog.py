@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -127,6 +128,19 @@ class MachineLibraryDialog(QDialog):
         self._controller.addItems(registered_controller_names())
         self._controller.currentTextChanged.connect(self._on_field_changed)
 
+        self._safe_height = QDoubleSpinBox()
+        self._safe_height.setRange(0.1, 500.0)
+        self._safe_height.setDecimals(2)
+        self._safe_height.setSingleStep(1.0)
+        self._safe_height.setSuffix(" mm")
+        self._safe_height.valueChanged.connect(self._on_field_changed)
+        self._clearance_plane = QDoubleSpinBox()
+        self._clearance_plane.setRange(0.01, 100.0)
+        self._clearance_plane.setDecimals(2)
+        self._clearance_plane.setSingleStep(0.5)
+        self._clearance_plane.setSuffix(" mm")
+        self._clearance_plane.valueChanged.connect(self._on_field_changed)
+
         self._program_start = QPlainTextEdit()
         self._program_start.setFixedHeight(64)
         self._program_start.textChanged.connect(self._on_field_changed)
@@ -140,6 +154,8 @@ class MachineLibraryDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.addRow("Name", self._name)
         form_layout.addRow("Controller", self._controller)
+        form_layout.addRow("Safe height", self._safe_height)
+        form_layout.addRow("Clearance plane", self._clearance_plane)
         form_layout.addRow("Program start", self._program_start)
         form_layout.addRow("Program end", self._program_end)
         form_layout.addRow("Tool change", self._tool_change)
@@ -234,6 +250,8 @@ class MachineLibraryDialog(QDialog):
             enabled = machine is not None
             self._name.setEnabled(enabled)
             self._controller.setEnabled(enabled)
+            self._safe_height.setEnabled(enabled)
+            self._clearance_plane.setEnabled(enabled)
             self._program_start.setEnabled(enabled)
             self._program_end.setEnabled(enabled)
             self._tool_change.setEnabled(enabled)
@@ -243,12 +261,16 @@ class MachineLibraryDialog(QDialog):
             if machine is None:
                 self._name.clear()
                 self._controller.setCurrentText("")
+                self._safe_height.setValue(self._safe_height.minimum())
+                self._clearance_plane.setValue(self._clearance_plane.minimum())
                 self._program_start.setPlainText("")
                 self._program_end.setPlainText("")
                 self._tool_change.setPlainText("")
                 return
             self._name.setText(machine.name)
             self._controller.setCurrentText(machine.controller)
+            self._safe_height.setValue(machine.defaults.safe_height)
+            self._clearance_plane.setValue(machine.defaults.clearance_plane)
             self._program_start.setPlainText(
                 machine.macros.get("program_start", "")
             )
@@ -269,6 +291,8 @@ class MachineLibraryDialog(QDialog):
         machine = self._library.machines[self._selected_index]
         machine.name = self._name.text()
         machine.controller = self._controller.currentText()
+        machine.defaults.safe_height = self._safe_height.value()
+        machine.defaults.clearance_plane = self._clearance_plane.value()
         machine.macros = {
             "program_start": self._program_start.toPlainText(),
             "program_end": self._program_end.toPlainText(),

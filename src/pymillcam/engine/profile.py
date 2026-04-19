@@ -45,7 +45,9 @@ from pymillcam.engine.common import (
     chain_is_ccw as _chain_is_ccw,
     emit_ramp_segments as _emit_ramp_segments,
     emit_segment as _common_emit_segment,
+    resolve_clearance as _resolve_clearance,
     resolve_entity as _common_resolve_entity,
+    resolve_safe_height as _resolve_safe_height,
     resolve_stepdown as _resolve_stepdown,
     resolve_tool_controller as _common_resolve_tool_controller,
     rotate_closed_chain_to_nearest_point as _rotate_closed_chain_to_nearest_point,
@@ -116,10 +118,8 @@ def compute_profile_preview(op: ProfileOp, project: Project) -> list[Segment]:
 def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
     """Generate an IR Toolpath for a single ProfileOp within the given Project."""
     tool_controller = _resolve_tool_controller(op, project)
-    safe_height = op.safe_height if op.safe_height is not None else project.settings.safe_height
-    clearance = (
-        op.clearance_plane if op.clearance_plane is not None else project.settings.clearance_plane
-    )
+    safe_height = _resolve_safe_height(op, project)
+    clearance = _resolve_clearance(op, project)
     chord_tolerance = (
         op.chord_tolerance
         if op.chord_tolerance is not None

@@ -54,7 +54,7 @@ Transforms IR → G-code for specific controllers.
 - `wizards/base.py` — `BaseWizard(QWizard)` + `BaseWizardPage` scaffold. `OperationFormPage` reuses the same `OperationFormBase` widget that Properties uses, so forms are defined once and surface in both places.
 - `box_selection.py` — Selection-combine semantics + rubber-band rect.
 - `tool_library_dialog.py` — Library editor (add / duplicate / delete / rename tool entries, atomic save).
-- `machine_dialog.py` — Machine editor (name, controller, program_start / program_end / tool_change macros). Bound to `Project.machine`; edits go through the undo stack. Auto-reseeds macro fields to the new controller's defaults when the user switches `uccnc` ↔ `grbl` (if they weren't hand-customised).
+- `machine_dialog.py` — Machine editor (name, controller, safe_height, clearance_plane, program_start / program_end / tool_change macros). Bound to `Project.machine`; edits go through the undo stack. Auto-reseeds macro fields to the new controller's defaults when the user switches `uccnc` ↔ `grbl` (if they weren't hand-customised). Optional `library` kwarg surfaces a "Load from library" picker at the top.
 - `machine_library_dialog.py` — App-global machine library editor. List + form + New / Duplicate / Delete / Set-as-default. Atomic JSON IO at `~/.config/PyMillCAM/machine_library.json`. New projects seed `project.machine` from the library's default entry (fresh `id`, `library_id` pointing back at the source).
 - `preferences_dialog.py` — Stitch tolerance + edit-coalesce window + auto-stitch toggle.
 - Operations tree, Select Similar, operation duplication (Ctrl+Shift+D, auto "(copy)" / "(copy N)" suffix), active-op entity highlight, and the unified tree/viewport entity context menu all live in `main_window.py`.

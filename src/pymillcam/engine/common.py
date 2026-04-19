@@ -115,15 +115,27 @@ def resolve_chord_tolerance(op: Operation, project: Project) -> float:
 
 
 def resolve_safe_height(op: Operation, project: Project) -> float:
+    """Cascade: op override → project setting → machine default.
+
+    Each layer's ``None`` falls through to the next. The machine's
+    ``defaults.safe_height`` is the authoritative value for the physical
+    CNC; project-level overrides usually appear when a specific job
+    needs more clearance (tall fixture, awkward stock).
+    """
     if op.safe_height is not None:
         return op.safe_height
-    return project.settings.safe_height
+    if project.settings.safe_height is not None:
+        return project.settings.safe_height
+    return project.machine.defaults.safe_height
 
 
 def resolve_clearance(op: Operation, project: Project) -> float:
+    """Cascade: op override → project setting → machine default."""
     if op.clearance_plane is not None:
         return op.clearance_plane
-    return project.settings.clearance_plane
+    if project.settings.clearance_plane is not None:
+        return project.settings.clearance_plane
+    return project.machine.defaults.clearance_plane
 
 
 # ------------------------------------------------------------ pass planning

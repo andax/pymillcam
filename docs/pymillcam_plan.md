@@ -918,8 +918,12 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   optional ``library`` kwarg so it surfaces a "Load from library"
   picker — swap the current project's machine to any library entry
   without starting a new project.
-- Machine defaults cascade (machine → project → op) still future; the
-  library shipped first since it was the bigger user-visible pain.
+- ✅ Machine defaults cascade (April 2026) —
+  ``ProjectSettings.safe_height`` / ``clearance_plane`` are now
+  optional. The engine-common resolvers cascade op override →
+  project setting → ``Project.machine.defaults`` → hardcoded
+  fallback. Both Machine and Machine-library dialogs expose the
+  defaults fields so users can edit them via the UI.
 - ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`
   + `find_similar_entities` (same layer / same type / same diameter
   within 0.01 mm). Surfaced through the unified entity context menu;

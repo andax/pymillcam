@@ -45,12 +45,20 @@ class Stock(BaseModel):
 
 
 class ProjectSettings(BaseModel):
-    """Project-level settings, overrides machine defaults."""
+    """Project-level settings, overrides machine defaults.
+
+    ``safe_height`` and ``clearance_plane`` are ``None`` by default —
+    that signals "inherit from machine defaults" at generation time.
+    The resolvers in ``engine/common.py`` cascade op-override → project
+    setting → ``Project.machine.defaults`` → hardcoded ultimate fallback.
+    Set a concrete value here when a specific job needs to override the
+    machine's configured safe travel (e.g. a fixture raised the stock).
+    """
     units: Units = Units.MM
     z_zero_reference: ZReference = ZReference.TOP_OF_STOCK
     work_origin: WorkOrigin = WorkOrigin.FRONT_LEFT
-    safe_height: float = 15.0
-    clearance_plane: float = 3.0
+    safe_height: float | None = None
+    clearance_plane: float | None = None
     # Max chord sag (mm) used when arcs must be collapsed to straight-line
     # segments for G-code output. 0.02 mm balances visual smoothness against
     # G-code length; tighten to 0.01 mm or below for metal finishing, loosen

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QLineEdit,
@@ -93,6 +94,23 @@ class MachineDialog(QDialog):
         )
         self._tool_change.setFixedHeight(84)
 
+        # Machine-level defaults. Projects inherit these via the
+        # engine-common cascade (op → project → machine), so editing
+        # them here changes how every future op on this machine plans
+        # its retracts unless a specific op / project overrides.
+        self._safe_height = QDoubleSpinBox()
+        self._safe_height.setRange(0.1, 500.0)
+        self._safe_height.setDecimals(2)
+        self._safe_height.setSingleStep(1.0)
+        self._safe_height.setSuffix(" mm")
+        self._safe_height.setValue(self._machine.defaults.safe_height)
+        self._clearance_plane = QDoubleSpinBox()
+        self._clearance_plane.setRange(0.01, 100.0)
+        self._clearance_plane.setDecimals(2)
+        self._clearance_plane.setSingleStep(0.5)
+        self._clearance_plane.setSuffix(" mm")
+        self._clearance_plane.setValue(self._machine.defaults.clearance_plane)
+
         # When the user picks a different controller, re-seed any macro
         # field that still matches the *old* controller's defaults so
         # switching UCCNC → GRBL actually changes the generated G-code.
@@ -115,6 +133,8 @@ class MachineDialog(QDialog):
             form.addRow("Load from library", self._library_picker)
         form.addRow("Name", self._name)
         form.addRow("Controller", self._controller)
+        form.addRow("Safe height", self._safe_height)
+        form.addRow("Clearance plane", self._clearance_plane)
         form.addRow("Program start", self._program_start)
         form.addRow("Program end", self._program_end)
         form.addRow("Tool change", self._tool_change)
@@ -169,6 +189,8 @@ class MachineDialog(QDialog):
         self._controller.setCurrentText(self._machine.controller)
         self._controller.blockSignals(False)
         self._macro_base_controller = self._machine.controller
+        self._safe_height.setValue(self._machine.defaults.safe_height)
+        self._clearance_plane.setValue(self._machine.defaults.clearance_plane)
         self._program_start.setPlainText(
             self._machine.macros.get("program_start", "")
         )
@@ -219,10 +241,17 @@ class MachineDialog(QDialog):
         macros["program_start"] = self._program_start.toPlainText()
         macros["program_end"] = self._program_end.toPlainText()
         macros["tool_change"] = self._tool_change.toPlainText()
+        defaults = self._machine.defaults.model_copy(
+            update={
+                "safe_height": self._safe_height.value(),
+                "clearance_plane": self._clearance_plane.value(),
+            }
+        )
         return self._machine.model_copy(
             update={
                 "name": self._name.text(),
                 "controller": self._controller.currentText(),
                 "macros": macros,
+                "defaults": defaults,
             }
         )
