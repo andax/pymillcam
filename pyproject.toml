@@ -36,10 +36,9 @@ dependencies = [
 pymillcam = "pymillcam.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/pymillcam/pymillcam"
-Documentation = "https://pymillcam.readthedocs.io"
-Repository = "https://github.com/pymillcam/pymillcam"
-Issues = "https://github.com/pymillcam/pymillcam/issues"
+Homepage = "https://github.com/andax/pymillcam"
+Repository = "https://github.com/andax/pymillcam"
+Issues = "https://github.com/andax/pymillcam/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pymillcam"]

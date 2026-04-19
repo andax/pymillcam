@@ -156,7 +156,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh    # Linux/macOS
 # Or: winget install --id=astral-sh.uv -e          # Windows
 
 # Clone and run
-git clone https://github.com/pymillcam/pymillcam.git
+git clone https://github.com/andax/pymillcam.git
 cd pymillcam
 uv sync                    # creates .venv and installs all deps
 uv run pymillcam           # launch the GUI

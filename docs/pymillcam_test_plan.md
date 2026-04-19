@@ -51,7 +51,7 @@ Run via `uv run pytest`. Current count and coverage (April 2026):
 | `tests/test_ui/test_tool_library_dialog.py` | 15 | Add / duplicate / delete / rename tool entries, save/load, dialog doesn't mutate input until OK, atomic write |
 | `tests/test_ui/test_wizards_base.py` | 6 | `BaseWizard.apply(project)` runs on Finish not Cancel, `OperationFormPage` embeds the same `OperationFormBase` widget the Properties panel uses |
 
-**Totals: 600 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy src` (strict).**
+**Totals: 697 automated tests. All green. Also covered: `uv run ruff check` and `uv run mypy src` (strict).**
 
 ### Critical invariants the suite guards against regression
 
