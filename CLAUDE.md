@@ -41,8 +41,10 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 
 ### Layer 3: Post-Processors (`src/pymillcam/post/`)
 Transforms IR → G-code for specific controllers.
-- `base.py` — PostProcessor Protocol
-- `uccnc.py`, `mach3.py`, `grbl.py`, `linuxcnc.py`
+- `base.py` — `PostProcessor` Protocol.
+- `_basic.py` — `BasicGcodePost` parent for the UCCNC/GRBL/LinuxCNC/Mach3 family; shared formatter for G0/G1/G2/G3, feed modality, arc I/J, tool-change macro substitution. Subclasses just set `name` and `default_macros`.
+- `uccnc.py`, `grbl.py` — shipped. `mach3.py`, `linuxcnc.py` not yet.
+- `__init__.py` — `POST_REGISTRY` (controller string → class) + `get_post(controller)` + `registered_controller_names()`. `main_window` uses `get_post(project.machine.controller)` at generation time so the correct post runs automatically; unknown controllers fall back to UCCNC.
 
 ### UI Layer (`src/pymillcam/ui/`) — PySide6
 - `main_window.py` — Shell. Owns the `ToolpathService` instance; delegates all engine work through it (no `isinstance` chains on op type).

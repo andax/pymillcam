@@ -688,10 +688,12 @@ pymillcam/
 │       │   └── optimizer.py         #   Toolpath optimization / TSP            [planned]
 │       │
 │       ├── post/                    # Layer 3: Post-Processors
+│       │   ├── __init__.py          #   POST_REGISTRY + get_post()
+│       │   ├── _basic.py            #   BasicGcodePost (shared G-code formatter)
 │       │   ├── base.py              #   PostProcessor protocol
 │       │   ├── uccnc.py             #   UCCNC post-processor
+│       │   ├── grbl.py              #   GRBL post-processor
 │       │   ├── mach3.py             #   Mach3 post-processor                   [planned]
-│       │   ├── grbl.py              #   GRBL post-processor                    [planned]
 │       │   └── linuxcnc.py          #   LinuxCNC post-processor                [planned]
 │       │
 │       ├── io/                      # Import/Export
@@ -935,7 +937,14 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   Add/Remove toggles by current membership, viewport right-click
   hit-tests the cursor first and falls back to current selection.
 - Measurement tools (point-to-point distance, entity dimensions)
-- Second post-processor (Mach3)
+- ✅ Second post-processor (April 2026) — GRBL. Shares
+  ``BasicGcodePost`` with UCCNC; only the dialect-neutral defaults
+  differ (``G21 G90`` preamble, ``M5\nM0`` manual-pause tool change,
+  since stock GRBL has no ``M6`` handler). A ``POST_REGISTRY`` keyed on
+  ``MachineDefinition.controller`` picks the post automatically at
+  generation time — users pick ``uccnc`` / ``grbl`` from the Machine
+  dialog's controller dropdown; unknown values fall back to UCCNC.
+  Mach3 and LinuxCNC slot into the same registry when they land.
 
 ### Phase 3: Wizards & Safety (2–3 weeks)
 
@@ -962,7 +971,7 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 - Pattern generators (rectangular grid, hex grid, circular array)
 - Pattern clipping to bounding geometry (CamBam-style vent grids)
 - Text-to-geometry conversion for engraving
-- Additional post-processors (GRBL, LinuxCNC)
+- Additional post-processors (Mach3, LinuxCNC — UCCNC and GRBL already ship)
 
 ### Phase 5: Polish & Ecosystem (2.5–3 weeks)
 

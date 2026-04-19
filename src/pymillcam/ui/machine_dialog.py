@@ -10,6 +10,7 @@ are persisted on the model but don't have UI yet; a future pre-flight
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from pymillcam.core.machine import MachineDefinition
+from pymillcam.post import registered_controller_names
 
 
 class MachineDialog(QDialog):
@@ -35,7 +37,16 @@ class MachineDialog(QDialog):
         self._machine = machine.model_copy(deep=True)
 
         self._name = QLineEdit(self._machine.name)
-        self._controller = QLineEdit(self._machine.controller)
+        # Controller drives which post-processor runs at generation time.
+        # Editable so users can type an unregistered name (e.g. a dialect
+        # shipped in a plugin); if the string doesn't match a registered
+        # post the engine falls back to UCCNC.
+        self._controller = QComboBox()
+        self._controller.setEditable(True)
+        self._controller.addItems(registered_controller_names())
+        # setCurrentText falls back to typed text when the value isn't in
+        # the preset list, so hand-rolled controller strings survive.
+        self._controller.setCurrentText(self._machine.controller)
 
         # Macros — multi-line so users can paste realistic shop macros.
         # Defaults look neutral; the hint labels below each field make it
@@ -97,7 +108,7 @@ class MachineDialog(QDialog):
         return self._machine.model_copy(
             update={
                 "name": self._name.text(),
-                "controller": self._controller.text(),
+                "controller": self._controller.currentText(),
                 "macros": macros,
             }
         )

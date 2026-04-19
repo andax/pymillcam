@@ -28,7 +28,7 @@ def test_dialog_populates_fields_from_machine(qtbot: QtBot) -> None:
     d = MachineDialog(m)
     qtbot.addWidget(d)
     assert d._name.text() == "Mini Mill"
-    assert d._controller.text() == "grbl"
+    assert d._controller.currentText() == "grbl"
     assert d._program_start.toPlainText() == "(SHOP_HEADER)"
     assert d._program_end.toPlainText() == "M5\nM30"
     assert d._tool_change.toPlainText() == "M0"
@@ -36,7 +36,7 @@ def test_dialog_populates_fields_from_machine(qtbot: QtBot) -> None:
 
 def test_result_machine_round_trips_edits(dialog: MachineDialog) -> None:
     dialog._name.setText("New name")
-    dialog._controller.setText("linuxcnc")
+    dialog._controller.setCurrentText("linuxcnc")
     dialog._program_start.setPlainText("G21 G90 G17")
     dialog._program_end.setPlainText("M5\nG53 G0 Z0\nM30")
     dialog._tool_change.setPlainText(

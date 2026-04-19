@@ -74,7 +74,7 @@ from pymillcam.engine.time_estimate import (
 )
 from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
-from pymillcam.post.uccnc import UccncPostProcessor
+from pymillcam.post import get_post
 from pymillcam.ui.machine_dialog import MachineDialog
 from pymillcam.ui.preferences_dialog import PreferencesDialog, default_preferences_path
 from pymillcam.ui.properties_panel import PropertiesPanel
@@ -1727,7 +1727,7 @@ class MainWindow(QMainWindow):
                 status = f"Generated G-code for {selected_op.name!r}"
             else:
                 gcode, toolpaths = self._toolpath_service.generate_program(
-                    self._project, UccncPostProcessor()
+                    self._project, get_post(self._project.machine.controller)
                 )
                 status = f"Generated G-code for {len(toolpaths)} operation(s)"
         except EngineError as exc:
@@ -1755,7 +1755,8 @@ class MainWindow(QMainWindow):
             tp = self._toolpath_service.generate_toolpath(op, self._project)
             if tp is not None:
                 toolpaths.append(tp)
-        gcode = UccncPostProcessor().post_program(
+        post = get_post(self._project.machine.controller)
+        gcode = post.post_program(
             toolpaths, macros=self._project.machine.macros
         )
         return gcode, toolpaths

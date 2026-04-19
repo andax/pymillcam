@@ -13,7 +13,9 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 > preamble / footer / tool-change **macros**. A shared **tool library**
 > (JSON), **Select Similar**, operation **duplication** and **reorder**,
 > per-op **time estimates** in the ops tree, and **per-op G-code export**
-> are in. Other posts (Mach3, GRBL, LinuxCNC), wizards, safety checks,
+> are in, with **UCCNC** and **GRBL** post-processors both shipped
+> (the post is picked automatically from the project's machine
+> controller). Other posts (Mach3, LinuxCNC), wizards, safety checks,
 > and built-in simulation are not built yet — see
 > [What's coming](#whats-coming) below.
 
@@ -63,13 +65,16 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   material, no between-pass retract. After the final pass, a cleanup slice
   re-cuts the sloped groove at full depth and a fixed-angle ascent rises
   back to the surface before the lead-out.
-- **UCCNC G-code output.** Emits G2/G3 with helical Z for ramps, feed
-  modality, tool change and spindle commands. **Machine macros**
-  (`program_start`, `program_end`, `tool_change`) from the project's
-  `MachineDefinition` are threaded through the post so shops can swap
-  in their own preamble, parking routine, and ATC-vs-manual tool change
-  without forking the post-processor. `{tool_number}` is substituted
-  inside `tool_change`.
+- **UCCNC and GRBL G-code output.** Emits G2/G3 with helical Z for ramps,
+  feed modality, tool change and spindle commands. The post is selected
+  automatically from the project's machine `controller` (pick
+  `uccnc` or `grbl` in the Machine dialog's controller dropdown).
+  GRBL defaults to a manual tool-change pause (`M5` + `M0`) since stock
+  GRBL has no `M6` handler; UCCNC emits `T<n> M6`. **Machine macros**
+  (`program_start`, `program_end`, `tool_change`) override those
+  defaults per-project, so shops can swap in their own preamble,
+  parking routine, and ATC sequences without forking the post.
+  `{tool_number}` is substituted inside `tool_change`.
 - **Tool library.** JSON-backed (`~/.config/PyMillCAM/tool_library.json`),
   atomic save (crash-safe). Edit > Tool library opens a dialog to add /
   duplicate / rename / delete entries. The Properties panel has a Tool
@@ -120,7 +125,7 @@ Short version:
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place
 - Pre-flight safety (Z stack budget, travel, fixture collision)
 - Built-in simulator
-- Mach3 / GRBL / LinuxCNC post-processors
+- Mach3 / LinuxCNC post-processors
 
 ## Installation
 
