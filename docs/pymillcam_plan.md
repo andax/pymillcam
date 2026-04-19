@@ -914,9 +914,10 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
   delete / set-as-default, and automatic seeding: new projects inherit
   the library's default machine (fresh ``id``, ``library_id`` pointing
   back at the source) so editing the project's machine never
-  retro-propagates to the library. No "Load from library" picker in
-  the Machine dialog yet — swapping the current project's machine to a
-  different library entry requires opening a new project.
+  retro-propagates to the library. The ``MachineDialog`` takes an
+  optional ``library`` kwarg so it surfaces a "Load from library"
+  picker — swap the current project's machine to any library entry
+  without starting a new project.
 - Machine defaults cascade (machine → project → op) still future; the
   library shipped first since it was the bigger user-visible pain.
 - ✅ Select Similar (April 2026) — `core/selection.SimilarityMode`

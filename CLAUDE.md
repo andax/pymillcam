@@ -243,12 +243,12 @@ Phase 1). Per-op override via the Properties panel.
   are persisted on the model but not exposed in the UI — they'll
   appear as features that consume them land (pre-flight validation,
   feed/speed calc).
-- The Machine dialog still edits *the project's* machine in place —
-  there's no "Load from library" picker inside it yet. Users who want
-  to swap the current project's machine to a different library entry
-  have to open a new project (which seeds from the library default) or
-  hand-edit the macros. Adding a picker is a small follow-up when
-  demand surfaces.
+- The Machine dialog takes an optional ``library`` kwarg; when a
+  non-empty library is passed, a "Load from library" picker appears
+  above the form. Selecting an entry re-populates every field and
+  stamps ``library_id`` on the result so the soft link survives save /
+  load. The picker returns to its prompt row after each pick so
+  re-selecting the same entry still triggers a reload.
 - DXF path stitching is now available two ways: an explicit
   `Operations > Join paths` action that welds the current selection,
   and an opt-in `auto_stitch_on_import` preference that runs the same

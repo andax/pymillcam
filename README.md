@@ -105,8 +105,10 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 - **Machine editor + library.** `Edit → Machine…` edits the project's
   machine — name, controller, and the three macro slots (preamble,
   footer, tool change) that the post substitutes into the program.
-  `{tool_number}` expands inside *Tool change*. `Edit → Machine
-  library…` opens an app-global library at
+  `{tool_number}` expands inside *Tool change*. A **Load from library**
+  picker at the top lets you swap the current project's machine to a
+  different library entry without starting a new project.
+  `Edit → Machine library…` opens the app-global library at
   `~/.config/PyMillCAM/machine_library.json`: add / duplicate / rename
   / delete machine entries and mark one as the default. New projects
   inherit the default machine (with a fresh id, so editing the
@@ -130,10 +132,6 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- In-dialog "Load from library" picker in the Machine dialog (the
-  underlying library is in; users just can't swap the current
-  project's machine to a different library entry without starting a
-  new project)
 - Feed/speed calculator (contextual, in the tool picker)
 - FreeCAD `.fctb` / `.fctl` and LinuxCNC tool-table import into the tool library
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place

@@ -6,6 +6,11 @@ three macro slots (``program_start``, ``program_end``, ``tool_change``).
 Other MachineDefinition fields (travel, spindle range, capabilities)
 are persisted on the model but don't have UI yet; a future pre-flight
 / feed-speed feature will grow the dialog as those fields gain meaning.
+
+An optional ``library`` argument surfaces a "Load from library"
+dropdown above the form: picking an entry re-populates every field
+from that library machine and stamps ``library_id`` on the result so
+the soft link survives save / load.
 """
 from __future__ import annotations
 
@@ -22,19 +27,30 @@ from PySide6.QtWidgets import (
 )
 
 from pymillcam.core.machine import MachineDefinition
+from pymillcam.core.machine_library import MachineLibrary
 from pymillcam.post import get_post, registered_controller_names
+
+# Sentinel stored on the "Load from library" combo's first entry.
+# Picking the prompt is a no-op — it's there so the combo doesn't
+# auto-apply the first library machine before the user has interacted.
+_LIBRARY_PROMPT = "(Load from library…)"
 
 
 class MachineDialog(QDialog):
     """Modal dialog for editing a ``MachineDefinition``."""
 
     def __init__(
-        self, machine: MachineDefinition, parent: QWidget | None = None
+        self,
+        machine: MachineDefinition,
+        parent: QWidget | None = None,
+        *,
+        library: MachineLibrary | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Machine")
         # Edit a copy — caller applies on accept via `result_machine()`.
         self._machine = machine.model_copy(deep=True)
+        self._library = library
 
         self._name = QLineEdit(self._machine.name)
         # Controller drives which post-processor runs at generation time.
@@ -84,6 +100,19 @@ class MachineDialog(QDialog):
         self._controller.currentTextChanged.connect(self._on_controller_changed)
 
         form = QFormLayout()
+        # Library picker — only shown when a non-empty library was passed.
+        # First item is a no-op prompt; the rest are machine entries
+        # carrying their id as ``data()`` for lookup on pick.
+        self._library_picker: QComboBox | None = None
+        if library is not None and library.machines:
+            self._library_picker = QComboBox()
+            self._library_picker.addItem(_LIBRARY_PROMPT, userData=None)
+            for m in library.machines:
+                self._library_picker.addItem(m.name, userData=m.id)
+            self._library_picker.currentIndexChanged.connect(
+                self._on_library_pick
+            )
+            form.addRow("Load from library", self._library_picker)
         form.addRow("Name", self._name)
         form.addRow("Controller", self._controller)
         form.addRow("Program start", self._program_start)
@@ -110,6 +139,52 @@ class MachineDialog(QDialog):
         layout.addWidget(hint)
         layout.addWidget(buttons)
 
+    def _on_library_pick(self, index: int) -> None:
+        """Load the picked library machine into the dialog.
+
+        Populates every form field from the chosen entry and stashes its
+        ``id`` on ``self._machine.library_id`` so ``result_machine()``
+        keeps the soft link. The prompt row (index 0) is a no-op — it
+        exists so the combo doesn't auto-apply before the user picks.
+        """
+        if self._library is None or self._library_picker is None:
+            return
+        machine_id = self._library_picker.itemData(index)
+        if machine_id is None:
+            return
+        source = self._library.find(machine_id)
+        if source is None:
+            return
+        self._machine = source.model_copy(
+            deep=True,
+            update={
+                "id": self._machine.id,
+                "library_id": source.id,
+            },
+        )
+        # Repopulate the form. Block the controller signal first so the
+        # macro-reseed logic doesn't fire on top of our explicit set.
+        self._name.setText(self._machine.name)
+        self._controller.blockSignals(True)
+        self._controller.setCurrentText(self._machine.controller)
+        self._controller.blockSignals(False)
+        self._macro_base_controller = self._machine.controller
+        self._program_start.setPlainText(
+            self._machine.macros.get("program_start", "")
+        )
+        self._program_end.setPlainText(
+            self._machine.macros.get("program_end", "")
+        )
+        self._tool_change.setPlainText(
+            self._machine.macros.get("tool_change", "")
+        )
+        # Leave the picker showing the prompt again so re-picking the
+        # same entry still triggers a reload (otherwise the combo is
+        # inert after its first selection).
+        self._library_picker.blockSignals(True)
+        self._library_picker.setCurrentIndex(0)
+        self._library_picker.blockSignals(False)
+
     def _on_controller_changed(self, new_controller: str) -> None:
         """Swap the macro fields when the user picks a different controller.
 
@@ -134,7 +209,12 @@ class MachineDialog(QDialog):
         self._macro_base_controller = new_controller
 
     def result_machine(self) -> MachineDefinition:
-        """Return a fresh ``MachineDefinition`` reflecting dialog state."""
+        """Return a fresh ``MachineDefinition`` reflecting dialog state.
+
+        Preserves ``library_id`` from whichever source the dialog last
+        synced with — either the input machine or a library entry the
+        user loaded via the picker.
+        """
         macros = dict(self._machine.macros)
         macros["program_start"] = self._program_start.toPlainText()
         macros["program_end"] = self._program_end.toPlainText()

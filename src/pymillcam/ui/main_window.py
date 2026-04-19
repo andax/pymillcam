@@ -2019,8 +2019,16 @@ class MainWindow(QMainWindow):
     def _on_edit_machine(self) -> None:
         """Open the Machine editor dialog. Changes go through the undo stack
         because the machine lives on the project — same semantics as an
-        operation or settings edit."""
-        dialog = MachineDialog(self._project.machine, self)
+        operation or settings edit.
+
+        The machine library is passed through so the dialog can offer a
+        "Load from library" picker: swapping the current project's
+        machine to a different library entry no longer requires starting
+        a new project.
+        """
+        dialog = MachineDialog(
+            self._project.machine, self, library=self._machine_library
+        )
         if dialog.exec() != MachineDialog.DialogCode.Accepted:
             return
         new_machine = dialog.result_machine()
