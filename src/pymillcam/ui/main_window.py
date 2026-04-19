@@ -1751,7 +1751,9 @@ class MainWindow(QMainWindow):
             tp = self._toolpath_service.generate_toolpath(op, self._project)
             if tp is not None:
                 toolpaths.append(tp)
-        gcode = UccncPostProcessor().post_program(toolpaths)
+        gcode = UccncPostProcessor().post_program(
+            toolpaths, macros=self._project.machine.macros
+        )
         return gcode, toolpaths
 
     def _on_export_op_gcode(self, op: Operation) -> None:

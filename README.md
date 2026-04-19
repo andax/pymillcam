@@ -62,7 +62,12 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   re-cuts the sloped groove at full depth and a fixed-angle ascent rises
   back to the surface before the lead-out.
 - **UCCNC G-code output.** Emits G2/G3 with helical Z for ramps, feed
-  modality, tool change and spindle commands.
+  modality, tool change and spindle commands. **Machine macros**
+  (`program_start`, `program_end`, `tool_change`) from the project's
+  `MachineDefinition` are threaded through the post so shops can swap
+  in their own preamble, parking routine, and ATC-vs-manual tool change
+  without forking the post-processor. `{tool_number}` is substituted
+  inside `tool_change`.
 - **Tool library.** JSON-backed (`~/.config/PyMillCAM/tool_library.json`),
   atomic save (crash-safe). Edit > Tool library opens a dialog to add /
   duplicate / rename / delete entries. The Properties panel has a Tool
@@ -95,7 +100,8 @@ See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
 - User-selectable contour start position (so lead / ramp marks land in scrap)
-- Machine definition system with defaults cascade (macros wired through the post)
+- Machine library + editor dialog (macros already flow through the post;
+  users just can't edit them from the UI yet)
 - Feed/speed calculator (contextual, in the tool picker)
 - FreeCAD `.fctb` / `.fctl` and LinuxCNC tool-table import into the tool library
 - Wizards (Sheet Cutout, Pocket, Drill Pattern, …) — scaffold in place

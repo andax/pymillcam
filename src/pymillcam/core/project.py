@@ -7,6 +7,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from pymillcam.core.geometry import GeometryLayer
+from pymillcam.core.machine import MachineDefinition
 from pymillcam.core.operations import DrillOp, PocketOp, ProfileOp
 from pymillcam.core.tools import ToolController
 
@@ -67,7 +68,12 @@ class Project(BaseModel):
     """Top-level project container."""
     version: int = 1
     name: str = "Untitled"
+    # ``machine_id`` is reserved for a future machine library (currently
+    # unused). ``machine`` holds the actual definition embedded in the
+    # project file so projects are portable between machines that don't
+    # share the same library.
     machine_id: str | None = None
+    machine: MachineDefinition = Field(default_factory=MachineDefinition)
     stock: Stock = Field(default_factory=Stock)
     settings: ProjectSettings = Field(default_factory=ProjectSettings)
     geometry_layers: list[GeometryLayer] = Field(default_factory=list)

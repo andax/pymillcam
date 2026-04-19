@@ -7,6 +7,7 @@ and ``generate_program`` assembles the full post-processor pipeline.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import pytest
@@ -167,9 +168,16 @@ class _RecordingPost:
 
     def __init__(self) -> None:
         self.received: list[Toolpath] = []
+        self.received_macros: Mapping[str, str] | None = None
 
-    def post_program(self, toolpaths: list[Toolpath]) -> str:
+    def post_program(
+        self,
+        toolpaths: list[Toolpath],
+        *,
+        macros: Mapping[str, str] | None = None,
+    ) -> str:
         self.received = list(toolpaths)
+        self.received_macros = macros
         return "(recorded)"
 
 
@@ -192,6 +200,22 @@ def test_generate_program_feeds_all_enabled_ops_to_post() -> None:
     assert gcode == "(recorded)"
     assert [tp.operation_name for tp in post.received] == ["P1", "P2"]
     assert toolpaths == post.received
+
+
+def test_generate_program_passes_machine_macros_to_post() -> None:
+    """Macros from ``project.machine`` reach the post verbatim — that's
+    how shop-specific preamble / postamble / tool-change sequences get
+    wired in. Missing macros are legitimate for a minimal Project; the
+    default factory always produces a dict, so post receives it."""
+    project = _project_with_rect(ProfileOp(name="P1", cut_depth=-1.0))
+    project.machine.macros["program_start"] = "(SHOP_HEADER)"
+    svc = ToolpathService()
+    post = _RecordingPost()
+
+    svc.generate_program(project, post)
+
+    assert post.received_macros is not None
+    assert post.received_macros["program_start"] == "(SHOP_HEADER)"
 
 
 def test_generate_program_skips_disabled_ops() -> None:

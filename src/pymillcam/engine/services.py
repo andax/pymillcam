@@ -120,12 +120,15 @@ class ToolpathService:
         Returns the G-code string plus the IR toolpaths that fed into
         it (so the UI can overlay the actual moves). Raises on the first
         ``EngineError`` — callers should catch and surface the error
-        without shipping partial G-code.
+        without shipping partial G-code. The project's machine macros
+        (``program_start`` / ``program_end`` / ``tool_change``) are
+        threaded into the post so shop-specific preamble, footer, and
+        tool-change sequences land in the output.
         """
         toolpaths: list[Toolpath] = []
         for op in project.operations:
             tp = self.generate_toolpath(op, project)
             if tp is not None:
                 toolpaths.append(tp)
-        gcode = post.post_program(toolpaths)
+        gcode = post.post_program(toolpaths, macros=project.machine.macros)
         return gcode, toolpaths

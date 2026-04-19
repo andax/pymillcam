@@ -170,7 +170,15 @@ Phase 2 progress (ongoing):
   gated to full circles), and per-op Add/Remove toggles by current
   membership. No greyed-out items. Viewport right-click hit-tests
   the cursor first and falls back to the current selection.
-- Machine definitions (macros wired through to the post) — not yet.
+- ✅ Machine macros through the post (April 2026) —
+  ``MachineDefinition`` now embeds on ``Project.machine`` and the post
+  accepts a ``macros`` kwarg with ``program_start`` / ``program_end`` /
+  ``tool_change``. The service threads ``project.machine.macros`` through
+  on every generation path (combined, per-op, export). ``{tool_number}``
+  is substituted in ``tool_change`` so the same project can target
+  manual-change and ATC shops by swapping the machine. Defaults are
+  dialect-neutral — they reproduce the pre-macros output verbatim, so
+  existing projects emit identical G-code on load.
 
 Infrastructure / architecture refactors (April 2026 — prep for Phase 3):
 - ✅ `engine/common.py` extracted. ~280 lines of shared cascade / chain /
@@ -224,8 +232,11 @@ Phase 1). Per-op override via the Properties panel.
   cover (non-tangent line↔arc concave joins, multi-loop / holed contours).
   The fallback path still collapses arcs to chords; track the residual
   cases as they come up.
-- Machine macros (program_start / program_end / tool_change) are defined
-  on `MachineDefinition` but not yet consumed by the post-processor.
+- No UI yet for editing ``MachineDefinition`` — macros are consumed by
+  the post via ``project.machine.macros``, but users must hand-edit the
+  ``.pmc`` JSON to customise them. A machine editor dialog (and a
+  machine library alongside the tool library) is the next step when a
+  user starts swapping machines in real work.
 - DXF path stitching is now available two ways: an explicit
   `Operations > Join paths` action that welds the current selection,
   and an opt-in `auto_stitch_on_import` preference that runs the same
