@@ -384,6 +384,18 @@ class MainWindow(QMainWindow):
         self._action_delete_operation.setShortcut(QKeySequence.StandardKey.Delete)
         self._action_delete_operation.setEnabled(False)
         self._action_delete_operation.triggered.connect(self._on_delete_operation)
+        self._action_move_operation_up = QAction("Move operation &up", self)
+        self._action_move_operation_up.setShortcut("Ctrl+Shift+Up")
+        self._action_move_operation_up.setEnabled(False)
+        self._action_move_operation_up.triggered.connect(
+            self._on_move_operation_up
+        )
+        self._action_move_operation_down = QAction("Move operation d&own", self)
+        self._action_move_operation_down.setShortcut("Ctrl+Shift+Down")
+        self._action_move_operation_down.setEnabled(False)
+        self._action_move_operation_down.triggered.connect(
+            self._on_move_operation_down
+        )
         self._action_add_to_op = QAction("&Add to active op", self)
         self._action_add_to_op.setShortcut("Shift+A")
         self._action_add_to_op.setEnabled(False)
@@ -403,6 +415,8 @@ class MainWindow(QMainWindow):
         ops_menu.addAction(self._action_add_drill)
         ops_menu.addAction(self._action_duplicate_operation)
         ops_menu.addAction(self._action_delete_operation)
+        ops_menu.addAction(self._action_move_operation_up)
+        ops_menu.addAction(self._action_move_operation_down)
         ops_menu.addSeparator()
         ops_menu.addAction(self._action_add_to_op)
         ops_menu.addAction(self._action_remove_from_op)
@@ -508,9 +522,22 @@ class MainWindow(QMainWindow):
         self._action_add_drill.setEnabled(bool(self._viewport.selection))
         # "Join paths" needs ≥ 2 selected entities to be meaningful.
         self._action_join_paths.setEnabled(len(self._viewport.selection) >= 2)
-        has_selected_op = self._currently_selected_operation() is not None
+        selected_op = self._currently_selected_operation()
+        has_selected_op = selected_op is not None
         self._action_delete_operation.setEnabled(has_selected_op)
         self._action_duplicate_operation.setEnabled(has_selected_op)
+        # Move-up disables at the top of the list, move-down at the bottom —
+        # there's no neighbour to swap with there.
+        op_index = (
+            self._project.operations.index(selected_op)
+            if selected_op is not None
+            else -1
+        )
+        op_count = len(self._project.operations)
+        self._action_move_operation_up.setEnabled(op_index > 0)
+        self._action_move_operation_down.setEnabled(
+            0 <= op_index < op_count - 1
+        )
         # Add/Remove-from-active-op need both an active op AND a non-empty
         # viewport selection.
         active_op = self._currently_selected_operation()
@@ -1067,6 +1094,22 @@ class MainWindow(QMainWindow):
             self._action_duplicate_operation.text()
         )
         act_delete = menu.addAction(self._action_delete_operation.text())
+        # Move entries target the right-clicked op, matching Duplicate /
+        # Delete above. Hidden rather than greyed out when the op sits at
+        # the list boundary — matches the unified entity context-menu
+        # policy of "don't show actions that wouldn't do anything."
+        ops = self._project.operations
+        op_index = ops.index(op) if op in ops else -1
+        act_move_up: QAction | None = None
+        act_move_down: QAction | None = None
+        if op_index > 0:
+            act_move_up = menu.addAction(
+                self._action_move_operation_up.text()
+            )
+        if 0 <= op_index < len(ops) - 1:
+            act_move_down = menu.addAction(
+                self._action_move_operation_down.text()
+            )
 
         chosen = menu.exec(global_pos)
         if chosen is None:
@@ -1075,6 +1118,10 @@ class MainWindow(QMainWindow):
             self._duplicate_op(op)
         elif chosen is act_delete:
             self._delete_op(op)
+        elif chosen is act_move_up:
+            self._move_op(op, delta=-1)
+        elif chosen is act_move_down:
+            self._move_op(op, delta=+1)
 
     def _tree_entity_selection(self) -> set[tuple[str, str]]:
         """Return the (layer, entity_id) set currently selected in the tree."""
@@ -1388,6 +1435,44 @@ class MainWindow(QMainWindow):
         if op is None:
             return
         self._duplicate_op(op)
+
+    def _on_move_operation_up(self) -> None:
+        op = self._currently_selected_operation()
+        if op is not None:
+            self._move_op(op, delta=-1)
+
+    def _on_move_operation_down(self) -> None:
+        op = self._currently_selected_operation()
+        if op is not None:
+            self._move_op(op, delta=+1)
+
+    def _move_op(self, op: Operation, *, delta: int) -> None:
+        """Swap `op` with its neighbour in `project.operations`.
+
+        `delta=-1` moves up (toward index 0), `delta=+1` moves down.
+        Order matters for G-code: operations are emitted in list order,
+        so reordering changes the machining sequence. Pushes one undo
+        entry and re-selects the moved op so the user can chain moves.
+        """
+        ops = self._project.operations
+        try:
+            index = ops.index(op)
+        except ValueError:
+            return
+        new_index = index + delta
+        if not 0 <= new_index < len(ops):
+            return
+        op_id = op.id
+
+        def mutate(project: Project) -> None:
+            project.operations[index], project.operations[new_index] = (
+                project.operations[new_index],
+                project.operations[index],
+            )
+
+        label = "Move operation up" if delta < 0 else "Move operation down"
+        self._do_action(label, mutate)
+        self._select_operation_in_tree(op_id)
 
     def _duplicate_op(self, op: Operation) -> None:
         """Clone a specific op.

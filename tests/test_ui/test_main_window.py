@@ -1432,3 +1432,82 @@ def test_tree_entity_selection_helper() -> None:
         main_window.close()
         main_window.deleteLater()
         app.processEvents()
+
+
+# --------------------------------------------------- move operation up / down
+
+
+def _make_two_profile_ops(main_window: MainWindow) -> None:
+    """Two profile ops on distinct entities so we can exercise ordering."""
+    project, a, b = _project_with_two_circles()
+    main_window.set_project(project)
+    _simulate_viewport_click(main_window, "L", a.id)
+    main_window._action_add_profile.trigger()
+    _simulate_viewport_click(main_window, "L", b.id)
+    main_window._action_add_profile.trigger()
+
+
+def test_move_up_disabled_for_top_op(main_window: MainWindow) -> None:
+    _make_two_profile_ops(main_window)
+    top_id = main_window.project.operations[0].id
+    main_window._select_operation_in_tree(top_id)
+    assert not main_window._action_move_operation_up.isEnabled()
+    assert main_window._action_move_operation_down.isEnabled()
+
+
+def test_move_down_disabled_for_bottom_op(main_window: MainWindow) -> None:
+    _make_two_profile_ops(main_window)
+    bottom_id = main_window.project.operations[-1].id
+    main_window._select_operation_in_tree(bottom_id)
+    assert main_window._action_move_operation_up.isEnabled()
+    assert not main_window._action_move_operation_down.isEnabled()
+
+
+def test_move_up_swaps_order(main_window: MainWindow) -> None:
+    _make_two_profile_ops(main_window)
+    first_id = main_window.project.operations[0].id
+    second_id = main_window.project.operations[1].id
+
+    main_window._select_operation_in_tree(second_id)
+    main_window._action_move_operation_up.trigger()
+
+    assert [op.id for op in main_window.project.operations] == [second_id, first_id]
+
+
+def test_move_down_swaps_order(main_window: MainWindow) -> None:
+    _make_two_profile_ops(main_window)
+    first_id = main_window.project.operations[0].id
+    second_id = main_window.project.operations[1].id
+
+    main_window._select_operation_in_tree(first_id)
+    main_window._action_move_operation_down.trigger()
+
+    assert [op.id for op in main_window.project.operations] == [second_id, first_id]
+
+
+def test_move_preserves_selection_on_moved_op(main_window: MainWindow) -> None:
+    """After a move the moved op stays selected, so chaining keyboard
+    shortcuts works naturally (Ctrl+Shift+Down, Ctrl+Shift+Down, ...)."""
+    _make_two_profile_ops(main_window)
+    target_id = main_window.project.operations[0].id
+
+    main_window._select_operation_in_tree(target_id)
+    main_window._action_move_operation_down.trigger()
+
+    assert main_window._currently_selected_operation() is not None
+    assert main_window._currently_selected_operation().id == target_id
+
+
+def test_move_is_undoable(main_window: MainWindow) -> None:
+    """Each move pushes one stack entry, so Ctrl+Z reverts the order."""
+    _make_two_profile_ops(main_window)
+    original_order = [op.id for op in main_window.project.operations]
+
+    main_window._select_operation_in_tree(original_order[0])
+    main_window._action_move_operation_down.trigger()
+    assert [op.id for op in main_window.project.operations] == list(
+        reversed(original_order)
+    )
+
+    main_window._action_undo.trigger()
+    assert [op.id for op in main_window.project.operations] == original_order
