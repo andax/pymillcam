@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QSpinBox,
@@ -174,16 +173,28 @@ class PropertiesPanel(QWidget):
         # Suppress programmatic combo changes from firing the user-edit
         # handler when we repopulate or sync to a new op.
         self._suspend_tool_signals = False
+        # Same idea for the Name line edit — populate() triggers
+        # textChanged, which would mistakenly mark the project dirty.
+        self._suspend_name_signals = False
 
-        # -------- Tool picker (panel-level, common to all op types) ----
+        # -------- Header (Name + Tool — panel-level, universal) --------
+        # The Name field lives at the panel level rather than inside each
+        # form so it's always the first thing the user sees, regardless of
+        # op type. The Tool combo follows the same rationale. The whole
+        # header is hidden when no op is bound so the empty-state message
+        # isn't cluttered with disabled widgets.
+        self._name = QLineEdit()
+        self._name.textEdited.connect(self._on_name_edited)
+
         self._tool_combo = QComboBox()
-        self._tool_combo.setEnabled(False)  # no op bound yet
         self._tool_combo.currentTextChanged.connect(self._on_tool_selected)
 
-        tool_row = QHBoxLayout()
-        tool_row.setContentsMargins(8, 8, 8, 0)
-        tool_row.addWidget(QLabel("Tool:"))
-        tool_row.addWidget(self._tool_combo, stretch=1)
+        self._header = QWidget()
+        header_layout = QFormLayout(self._header)
+        header_layout.setContentsMargins(8, 8, 8, 0)
+        header_layout.addRow("Name", self._name)
+        header_layout.addRow("Tool", self._tool_combo)
+        self._header.setVisible(False)
 
         # -------- Stack of per-op-type forms ---------------------------
         self._stack = QStackedWidget(self)
@@ -204,7 +215,7 @@ class PropertiesPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(tool_row)
+        layout.addWidget(self._header)
         layout.addWidget(self._stack, stretch=1)
 
         self._rebuild_tool_combo()
@@ -251,20 +262,20 @@ class PropertiesPanel(QWidget):
         """Bind the panel to ``operation``. ``None`` shows the empty state."""
         self._operation = operation
         self._tool_controller = tool_controller
-        if operation is None:
+        form = self._forms.get(type(operation)) if operation is not None else None
+        if operation is None or form is None:
+            self._header.setVisible(False)
             self._stack.setCurrentWidget(self._empty)
-            self._tool_combo.setEnabled(False)
             self._sync_tool_combo_to_op()
             return
-        form = self._forms.get(type(operation))
-        if form is None:
-            self._stack.setCurrentWidget(self._empty)
-            self._tool_combo.setEnabled(False)
-            self._sync_tool_combo_to_op()
-            return
+        self._suspend_name_signals = True
+        try:
+            self._name.setText(operation.name)
+        finally:
+            self._suspend_name_signals = False
         form.bind(operation, tool_controller)
+        self._header.setVisible(True)
         self._stack.setCurrentWidget(form)
-        self._tool_combo.setEnabled(True)
         self._sync_tool_combo_to_op()
 
     # -- Signal plumbing ---------------------------------------------
@@ -278,6 +289,16 @@ class PropertiesPanel(QWidget):
         if form is None:
             return
         form.write_back(op, self._tool_controller)
+        self.operation_changed.emit()
+
+    def _on_name_edited(self, text: str) -> None:
+        """Write back the panel-level Name field to the bound op."""
+        if self._suspend_name_signals:
+            return
+        op = self._operation
+        if op is None:
+            return
+        op.name = text
         self.operation_changed.emit()
 
     def _on_tool_selected(self, _display_text: str) -> None:
@@ -422,7 +443,6 @@ class _ProfileForm(OperationFormBase):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.name = QLineEdit()
         self.offset_side = QComboBox()
         self.offset_side.addItems([s.value for s in OffsetSide])
         self.direction = QComboBox()
@@ -479,7 +499,6 @@ class _ProfileForm(OperationFormBase):
         self.tabs_ramp_length.setSuffix(" mm")
 
         form = QFormLayout(self)
-        form.addRow("Name", self.name)
         form.addRow("Tool diameter", self.tool_diameter)
         form.addRow("Offset side", self.offset_side)
         form.addRow("Direction", self.direction)
@@ -501,7 +520,6 @@ class _ProfileForm(OperationFormBase):
         form.addRow("Tab ramp length", self.tabs_ramp_length)
 
         self._wire(
-            self.name.textEdited,
             self.offset_side.currentTextChanged,
             self.direction.currentTextChanged,
             self.cut_depth.valueChanged,
@@ -527,7 +545,6 @@ class _ProfileForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, ProfileOp)
-        self.name.setText(op.name)
         self.offset_side.setCurrentText(op.offset_side.value)
         self.direction.setCurrentText(op.direction.value)
         self.cut_depth.setValue(op.cut_depth)
@@ -561,7 +578,6 @@ class _ProfileForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, ProfileOp)
-        op.name = self.name.text()
         op.offset_side = OffsetSide(self.offset_side.currentText())
         op.direction = MillingDirection(self.direction.currentText())
         op.cut_depth = self.cut_depth.value()
@@ -608,7 +624,6 @@ class _PocketForm(OperationFormBase):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.name = QLineEdit()
         self.strategy = QComboBox()
         self.strategy.addItems([s.value for s in PocketStrategy])
         self.direction = QComboBox()
@@ -654,7 +669,6 @@ class _PocketForm(OperationFormBase):
         self.rest_machining = QCheckBox("Rest machining (V-notch cleanup)")
 
         form = QFormLayout(self)
-        form.addRow("Name", self.name)
         form.addRow("Tool diameter", self.tool_diameter)
         form.addRow("Strategy", self.strategy)
         form.addRow("Direction", self.direction)
@@ -669,7 +683,6 @@ class _PocketForm(OperationFormBase):
         form.addRow("", self.rest_machining)
 
         self._wire(
-            self.name.textEdited,
             self.strategy.currentTextChanged,
             self.direction.currentTextChanged,
             self.tool_diameter.valueChanged,
@@ -688,7 +701,6 @@ class _PocketForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, PocketOp)
-        self.name.setText(op.name)
         self.strategy.setCurrentText(op.strategy.value)
         self.direction.setCurrentText(op.direction.value)
         self.cut_depth.setValue(op.cut_depth)
@@ -713,7 +725,6 @@ class _PocketForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, PocketOp)
-        op.name = self.name.text()
         op.strategy = PocketStrategy(self.strategy.currentText())
         op.direction = MillingDirection(self.direction.currentText())
         op.cut_depth = self.cut_depth.value()
@@ -748,7 +759,6 @@ class _DrillForm(OperationFormBase):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.name = QLineEdit()
         self.cycle = QComboBox()
         self.cycle.addItems([c.value for c in DrillCycle])
         self.tool_diameter = QDoubleSpinBox()
@@ -779,7 +789,6 @@ class _DrillForm(OperationFormBase):
         self.dwell_at_bottom.setSuffix(" s")
 
         form = QFormLayout(self)
-        form.addRow("Name", self.name)
         form.addRow("Tool diameter", self.tool_diameter)
         form.addRow("Cycle", self.cycle)
         form.addRow("Cut depth", self.cut_depth)
@@ -789,7 +798,6 @@ class _DrillForm(OperationFormBase):
         form.addRow("Dwell at bottom", self.dwell_at_bottom)
 
         self._wire(
-            self.name.textEdited,
             self.cycle.currentTextChanged,
             self.tool_diameter.valueChanged,
             self.cut_depth.valueChanged,
@@ -803,7 +811,6 @@ class _DrillForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, DrillOp)
-        self.name.setText(op.name)
         self.cycle.setCurrentText(op.cycle.value)
         self.cut_depth.setValue(op.cut_depth)
         override = op.peck_depth is not None
@@ -823,7 +830,6 @@ class _DrillForm(OperationFormBase):
         self, op: Operation, tool_controller: ToolController | None
     ) -> None:
         assert isinstance(op, DrillOp)
-        op.name = self.name.text()
         op.cycle = DrillCycle(self.cycle.currentText())
         op.cut_depth = self.cut_depth.value()
         override = self.peck_depth_override.isChecked()

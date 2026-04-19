@@ -45,7 +45,7 @@ def test_set_operation_populates_fields(panel: PropertiesPanel) -> None:
         chord_tolerance=0.02,
     )
     panel.set_operation(op)
-    assert panel._profile_form.name.text() == "Test"
+    assert panel._name.text() == "Test"
     assert panel._profile_form.offset_side.currentText() == "inside"
     assert panel._profile_form.cut_depth.value() == -4.5
     assert not panel._profile_form.multi_depth.isChecked()
@@ -205,7 +205,7 @@ def test_pocket_fields_populate_from_op(panel: PropertiesPanel) -> None:
         stepover=1.25,
     )
     panel.set_operation(op)
-    assert panel._pocket_form.name.text() == "Pocket"
+    assert panel._name.text() == "Pocket"
     assert panel._pocket_form.strategy.currentText() == "offset"
     assert panel._pocket_form.direction.currentText() == "conventional"
     assert panel._pocket_form.cut_depth.value() == pytest.approx(-4.0)
@@ -305,7 +305,7 @@ def test_drill_fields_populate_from_op(panel: PropertiesPanel) -> None:
     )
     panel.set_operation(op)
     form = panel.form_for(DrillOp)
-    assert form.name.text() == "D"
+    assert panel._name.text() == "D"
     assert form.cycle.currentText() == "peck"
     assert form.cut_depth.value() == pytest.approx(-6.0)
     assert form.peck_depth_override.isChecked()
@@ -379,10 +379,12 @@ def _lib_tool(name: str, *, diameter: float = 3.0, rpm: int = 18000,
     return t
 
 
-def test_tool_combo_is_disabled_when_no_op_bound(panel: PropertiesPanel) -> None:
-    """The combo would have nothing to act on without a bound op; keep
-    it disabled so a stray click can't try to mutate a None controller."""
-    assert not panel._tool_combo.isEnabled()
+def test_header_is_hidden_when_no_op_bound(panel: PropertiesPanel) -> None:
+    """The Name + Tool header is only relevant with a bound op — it's hidden
+    entirely in the empty state so stray clicks can't mutate a None
+    controller and the empty-state message isn't cluttered by disabled
+    widgets."""
+    assert panel._header.isHidden()
 
 
 def test_tool_combo_lists_library_tools(panel: PropertiesPanel) -> None:
