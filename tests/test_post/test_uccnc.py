@@ -55,10 +55,25 @@ def test_empty_program_has_only_preamble_and_footer() -> None:
     ]
 
 
-def test_toolpath_name_appears_as_comment() -> None:
+def test_post_does_not_add_its_own_toolpath_header() -> None:
+    """Op-name comments live in each generator's IR (e.g. ``(Pocket: foo)``),
+    so the post doesn't prepend its own header — otherwise every op would
+    surface two near-identical comments in the program."""
     tp = Toolpath(operation_name="Outer profile", tool_number=1, instructions=[])
     out = UccncPostProcessor().post_program([tp])
-    assert "(Toolpath: Outer profile)" in out
+    assert "Outer profile" not in out
+
+
+def test_ir_comment_instructions_pass_through_to_output() -> None:
+    """The generator-emitted `(Profile: name)` / `(Pocket: name)` / etc.
+    header comments reach the output via the IR COMMENT instruction."""
+    tp = Toolpath(
+        operation_name="ignored",
+        tool_number=1,
+        instructions=[IRInstruction(type=MoveType.COMMENT, comment="Profile: Outer")],
+    )
+    out = UccncPostProcessor().post_program([tp])
+    assert "(Profile: Outer)" in out
 
 
 # ---------- individual instructions ---------------------------------------

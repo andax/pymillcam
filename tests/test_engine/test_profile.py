@@ -114,6 +114,13 @@ def test_generates_tool_change_spindle_on_and_final_retract() -> None:
     # running when the tool reaches safe height.
     assert tp.instructions[-1].type is MoveType.RAPID
     assert tp.instructions[-1].z == project.settings.safe_height
+    # Regression: `_emit_contour_passes` already retracts to safe_height
+    # at the end of every contour. A second retract at the dispatcher
+    # level was producing duplicate `G0 Z{safe_height}` lines in the
+    # G-code. Assert only one trailing safe-height rapid.
+    assert tp.instructions[-2].type is not MoveType.RAPID or (
+        tp.instructions[-2].z != project.settings.safe_height
+    )
 
 
 def test_multi_depth_plunges_straight_without_ramp() -> None:

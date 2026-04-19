@@ -65,6 +65,7 @@ from pymillcam.core.tool_library import (
 )
 from pymillcam.core.tools import Tool, ToolController, ToolShape
 from pymillcam.engine.common import EngineError
+from pymillcam.engine.ir import Toolpath
 from pymillcam.engine.ir_walker import walk_toolpath
 from pymillcam.engine.services import ToolpathService
 from pymillcam.engine.time_estimate import (
@@ -1110,6 +1111,8 @@ class MainWindow(QMainWindow):
             act_move_down = menu.addAction(
                 self._action_move_operation_down.text()
             )
+        menu.addSeparator()
+        act_export = menu.addAction("&Export G-code…")
 
         chosen = menu.exec(global_pos)
         if chosen is None:
@@ -1122,6 +1125,8 @@ class MainWindow(QMainWindow):
             self._move_op(op, delta=-1)
         elif chosen is act_move_down:
             self._move_op(op, delta=+1)
+        elif chosen is act_export:
+            self._on_export_op_gcode(op)
 
     def _tree_entity_selection(self) -> set[tuple[str, str]]:
         """Return the (layer, entity_id) set currently selected in the tree."""
@@ -1700,25 +1705,74 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_generate_gcode(self) -> None:
+        """Generate G-code for the tree-selected op, or the whole program.
+
+        Selection-driven: when the user has a single operation row
+        selected we emit just that op (wrapped in the same preamble /
+        postamble the combined program uses, so it's a standalone
+        program you can run on the controller). Selecting the
+        ``Operations`` group (or nothing) falls back to the combined
+        program.
+        """
         if not self._project.operations:
             return
+        selected_op = self._currently_selected_operation()
         try:
-            gcode, toolpaths = self._toolpath_service.generate_program(
-                self._project, UccncPostProcessor()
-            )
+            if selected_op is not None:
+                gcode, toolpaths = self._generate_program_for_ops([selected_op])
+                status = f"Generated G-code for {selected_op.name!r}"
+            else:
+                gcode, toolpaths = self._toolpath_service.generate_program(
+                    self._project, UccncPostProcessor()
+                )
+                status = f"Generated G-code for {len(toolpaths)} operation(s)"
         except EngineError as exc:
             QMessageBox.critical(self, "G-code generation failed", str(exc))
             return
         self._output.setPlainText(gcode)
-        # Walk every toolpath into XY moves and show them as the
-        # "what the machine will actually do" overlay.
         all_moves = []
         for tp in toolpaths:
             all_moves.extend(walk_toolpath(tp.instructions))
         self._viewport.set_toolpath_preview(all_moves)
-        self.statusBar().showMessage(
-            f"Generated G-code for {len(toolpaths)} operation(s)", 5000
+        self.statusBar().showMessage(status, 5000)
+
+    def _generate_program_for_ops(
+        self, ops: list[Operation]
+    ) -> tuple[str, list[Toolpath]]:
+        """Post-process a specific subset of ops into a standalone program.
+
+        Reuses the post-processor (so preamble / postamble / spindle-off
+        / M30 are all there) but feeds it only the toolpaths for `ops`
+        instead of every op in the project. Disabled / unsupported ops
+        resolve to ``None`` and are skipped.
+        """
+        toolpaths: list[Toolpath] = []
+        for op in ops:
+            tp = self._toolpath_service.generate_toolpath(op, self._project)
+            if tp is not None:
+                toolpaths.append(tp)
+        gcode = UccncPostProcessor().post_program(toolpaths)
+        return gcode, toolpaths
+
+    def _on_export_op_gcode(self, op: Operation) -> None:
+        """Save the selected op's standalone G-code to a file."""
+        default_name = f"{op.name or op.id}.nc"
+        # Strip characters that tend to upset Windows file systems — users
+        # often use "/" in op names as a logical separator.
+        default_name = default_name.replace("/", "_").replace("\\", "_")
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, f"Export G-code — {op.name}", default_name,
+            "G-code files (*.nc *.ngc *.tap);;All files (*)",
         )
+        if not path_str:
+            return
+        try:
+            gcode, _ = self._generate_program_for_ops([op])
+        except EngineError as exc:
+            QMessageBox.critical(self, "G-code generation failed", str(exc))
+            return
+        Path(path_str).write_text(gcode, encoding="utf-8")
+        self.statusBar().showMessage(f"Exported G-code to {Path(path_str).name}", 5000)
 
     # -------------------------------------------------------------- save/load
 

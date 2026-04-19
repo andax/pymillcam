@@ -156,7 +156,10 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
             tabs=op.tabs,
         )
 
-    instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
+    # `_emit_contour_passes` ends every contour with a retract to
+    # safe_height — it's the safe final state between contours and
+    # also the safe state to leave the op in. Adding another retract
+    # here just produced a duplicate `G0 Z{safe_height}` in the G-code.
     return toolpath
 
 
