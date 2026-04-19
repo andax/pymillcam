@@ -306,6 +306,38 @@ Two things that cross all op types:
 | Delete operation | `Del` |
 | Generate G-code | `Ctrl+G` |
 
+## Safety
+
+**PyMillCAM is beta software.** CNC machines generate enough force to
+destroy expensive stock, break tools, damage the machine, and injure
+or kill the operator. Everything in the license's `NO WARRANTY` clause
+applies to this project; the bullet points below are the plain-English
+version of what that means in practice:
+
+- **Verify every program before you cut.** Load the generated G-code
+  into a simulator (CAMotics, UCCNC's preview, your controller's
+  backplot) and confirm the toolpath matches your intent. Pay
+  particular attention to rapids, plunges, safe heights, and that the
+  tool never drops below the stock outside the cut region.
+- **Run the first cut in air** — lift the tool to safe height or run
+  without the stock clamped — to catch overtravel, wrong origin, and
+  spindle direction issues before they mean anything.
+- **Match the machine to the G-code dialect.** The Machine dialog's
+  Controller setting drives the post; pick the one that matches your
+  firmware (`uccnc`, `grbl`) and confirm the preamble / tool-change
+  macros suit your shop.
+- **Use proper safety equipment** — eye protection, hearing
+  protection, dust collection for wood / MDF, coolant / mist for
+  metals. Keep an emergency stop within reach.
+- **PyMillCAM authors and contributors are not liable** for any damage
+  to machines, workpieces, fixtures, tools, or persons arising from
+  use of the software. By using PyMillCAM you accept full responsibility
+  for the G-code that runs on your machine.
+
+Every generated G-code program carries a beta notice in the header
+comments as a reminder. Don't strip them without thinking about what
+they say.
+
 ## Testing and feedback
 
 If you're trying PyMillCAM as a tester, things that are especially useful
@@ -334,4 +366,7 @@ detail in [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md).
 
 ## License
 
-LGPL-3.0-or-later
+GPL-3.0-or-later. Full text in [`LICENSE`](LICENSE). PyMillCAM is
+distributed in the hope that it will be useful, but **WITHOUT ANY
+WARRANTY** — see [Safety](#safety) above for the plain-English
+implications for CNC use.

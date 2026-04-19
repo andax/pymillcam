@@ -17,8 +17,10 @@ def test_default_preamble_omits_uccnc_only_codes() -> None:
     some older GRBL builds reject the explicit statement. The GRBL post
     emits just ``G21 G90``."""
     out = GrblPostProcessor().post_program([])
-    lines = out.splitlines()
-    assert lines[1] == "G21 G90"
+    # "G21 G90" appears verbatim as its own line (no prefix, no extra
+    # codes). Index-free check so adding header comments later doesn't
+    # break this.
+    assert "G21 G90" in out.splitlines()
 
 
 def test_default_tool_change_pauses_instead_of_m6() -> None:
