@@ -265,11 +265,15 @@ Phase 1). Per-op override via the Properties panel.
     lead anchors) sees a tiny discontinuity. Low priority since the
     generated test fixtures have zero gap; revisit if a hand-drawn DXF
     surfaces a bug.
-- Tool library is shipped, but ops still own their own `ToolController`.
-  Library membership is a soft link via `Tool.library_id`; edits made
-  through the library dialog don't propagate to ops already created
-  from that tool. A future "sync from library" action (or live binding)
-  is the next step when users start managing real libraries.
+- Tool library is shipped, ops own their own `ToolController`, and the
+  Properties-panel Tool dropdown keeps its library pin live via
+  `Tool.library_id`. Editing a tool-geometry field on a library-backed
+  op auto-unpins (drops `library_id` and flips the dropdown to
+  `(Custom)`); re-picking the library entry re-applies its values, so
+  "reset to library default" is a single click. Edits made through
+  the Tool Library dialog still don't retro-propagate to already-
+  created ops — only re-picking does that, which is the trade-off for
+  keeping `.pmc` files self-contained.
 - Property-edit coalescing window is a hardcoded 400 ms in
   `MainWindow._edit_timer`. Probably fine, but worth revisiting if real
   users find it laggy or jumpy.

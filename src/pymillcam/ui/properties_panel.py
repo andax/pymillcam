@@ -103,22 +103,6 @@ class OperationFormBase(QWidget):
         finally:
             self._suspend_signals = False
 
-    def set_tool_editable(self, editable: bool) -> None:
-        """Enable or disable tool-related form widgets.
-
-        Called by :class:`PropertiesPanel` to lock tool fields when the
-        bound op is pinned to a library tool — prevents the dropdown
-        label and the actual tool geometry from silently diverging.
-        Re-enabled when the user picks ``(Custom)``.
-
-        Default implementation toggles ``self.tool_diameter`` if the
-        subclass exposes one. Subclasses with richer tool UIs (shape
-        picker, flute count, etc.) override to cover them too.
-        """
-        widget = getattr(self, "tool_diameter", None)
-        if widget is not None:
-            widget.setEnabled(editable)
-
     # -- Abstract -----------------------------------------------------
 
     def populate(
@@ -281,7 +265,14 @@ class PropertiesPanel(QWidget):
     # -- Signal plumbing ---------------------------------------------
 
     def _on_form_field_changed(self) -> None:
-        """Route a form-level edit to the bound op, then re-emit at panel level."""
+        """Route a form-level edit to the bound op, then re-emit at panel level.
+
+        If the op was pinned to a library tool and the edit made its
+        tool diverge from that library entry, clear ``library_id`` and
+        switch the Tool combo to ``(Custom)``. The user gets visible
+        feedback that the tool is no longer library-backed without
+        having to manually unpin.
+        """
         op = self._operation
         if op is None:
             return
@@ -289,7 +280,28 @@ class PropertiesPanel(QWidget):
         if form is None:
             return
         form.write_back(op, self._tool_controller)
+        self._unpin_if_diverged_from_library()
         self.operation_changed.emit()
+
+    def _unpin_if_diverged_from_library(self) -> None:
+        """Check whether the bound op's tool still matches its pinned
+        library entry; if not, clear ``library_id`` and resync the
+        combo. Silent no-op when the op isn't library-backed, when the
+        referenced library entry was deleted, or when the values still
+        match exactly."""
+        tc = self._tool_controller
+        if tc is None or tc.tool.library_id is None:
+            return
+        lib_tool = self._tool_library.find(tc.tool.library_id)
+        if lib_tool is None:
+            # The library entry was deleted — leave library_id as-is so
+            # a re-added tool with the same id re-pins, but don't claim
+            # divergence here since there's nothing to compare.
+            return
+        if tc.tool.geometry == lib_tool.geometry:
+            return
+        tc.tool.library_id = None
+        self._sync_tool_combo_to_op()
 
     def _on_name_edited(self, text: str) -> None:
         """Write back the panel-level Name field to the bound op."""
@@ -333,14 +345,15 @@ class PropertiesPanel(QWidget):
         lib_id = self._tool_combo.currentData()
 
         if lib_id is None:
-            # (Custom) — unpin so the user can edit, but don't mutate
-            # tool values. Only emit operation_changed if state actually
-            # changed so a no-op reselection doesn't churn the undo
-            # stack / preview.
+            # (Custom) — unpin so the dropdown matches state. Don't
+            # mutate tool values; the user reached Custom either by
+            # picking it deliberately or by our divergence check after
+            # editing a field, and in both cases the tool's current
+            # state is what they want. Only emit ``operation_changed``
+            # if state actually changed so a no-op reselection doesn't
+            # churn the undo stack / preview.
             changed = tc.tool.library_id is not None
             tc.tool.library_id = None
-            if form is not None:
-                form.set_tool_editable(True)
             if changed:
                 self.operation_changed.emit()
             return
@@ -359,7 +372,6 @@ class PropertiesPanel(QWidget):
             tc.feed_z = cd.feed_z
         if form is not None:
             form.bind(op, tc)
-            form.set_tool_editable(False)
         self.operation_changed.emit()
 
     # -- Tool combo maintenance --------------------------------------
@@ -395,17 +407,11 @@ class PropertiesPanel(QWidget):
         self._suspend_tool_signals = True
         try:
             tc = self._tool_controller
-            op = self._operation
-            form = self._forms.get(type(op)) if op is not None else None
 
             if tc is None:
                 self._tool_combo.setCurrentIndex(
                     self._tool_combo.count() - 1  # (Custom)
                 )
-                if form is not None:
-                    # No controller — ``populate`` already disabled the
-                    # tool widgets; leave them that way.
-                    pass
                 return
 
             lib_id = tc.tool.library_id
@@ -413,16 +419,11 @@ class PropertiesPanel(QWidget):
                 idx = self._find_combo_index_by_library_id(lib_id)
                 if idx >= 0:
                     self._tool_combo.setCurrentIndex(idx)
-                    if form is not None:
-                        form.set_tool_editable(False)
                     return
                 # library_id set but the library no longer has that
                 # tool — fall through to (Custom).
 
-            # Custom mode: last combo entry, editable fields.
             self._tool_combo.setCurrentIndex(self._tool_combo.count() - 1)
-            if form is not None:
-                form.set_tool_editable(True)
         finally:
             self._suspend_tool_signals = False
 

@@ -595,12 +595,11 @@ def test_set_tool_library_after_bind_refreshes_combo(
 # ---------- Lock behaviour: tool fields follow combo state --------------
 
 
-def test_library_tool_selection_locks_tool_diameter(
+def test_library_tool_fields_stay_editable(
     panel: PropertiesPanel,
 ) -> None:
-    """When a library tool is selected, tool_diameter must be
-    read-only — otherwise the user could silently make the op's tool
-    diverge from the library tool the dropdown claims it's using."""
+    """Tool fields are always editable — divergence is handled by
+    unpinning (see the live-sync tests below) rather than locking."""
     from pymillcam.core.tools import Tool, ToolController
 
     lib_tool = _lib_tool("3mm flat")
@@ -612,57 +611,71 @@ def test_library_tool_selection_locks_tool_diameter(
     op = ProfileOp(name="P", tool_controller_id=1)
     panel.set_operation(op, tool_controller=tc)
 
-    assert not panel._profile_form.tool_diameter.isEnabled()
+    assert panel._profile_form.tool_diameter.isEnabled()
 
 
-def test_picking_library_tool_locks_tool_diameter(
+def test_editing_tool_diameter_unpins_library_and_switches_to_custom(
     panel: PropertiesPanel,
 ) -> None:
-    """Switching to a library tool via the combo transitions the
-    tool_diameter widget from editable to locked in a single action."""
+    """Live-sync: nudging any tool field on a library-backed op
+    clears ``library_id`` and flips the combo to (Custom)."""
     from pymillcam.core.tools import Tool, ToolController
 
-    lib_tool = _lib_tool("3mm flat")
+    lib_tool = _lib_tool("3mm flat", diameter=3.0)
     panel.set_tool_library(_library_with(lib_tool))
     tc = ToolController(
-        tool_number=1, tool=Tool(name="custom", library_id=None)
+        tool_number=1,
+        tool=Tool(
+            name="3mm flat",
+            library_id=lib_tool.id,
+            geometry=dict(lib_tool.geometry),
+        ),
     )
     op = ProfileOp(name="P", tool_controller_id=1)
     panel.set_operation(op, tool_controller=tc)
-    # Starts editable (custom tool).
-    assert panel._profile_form.tool_diameter.isEnabled()
+    # Before: dropdown points at the library tool.
+    assert panel._tool_combo.currentData() == lib_tool.id
 
+    panel._profile_form.tool_diameter.setValue(6.0)
+
+    assert tc.tool.library_id is None
+    assert panel._tool_combo.currentText() == "(Custom)"
+
+
+def test_reselecting_library_tool_restores_values(
+    panel: PropertiesPanel,
+) -> None:
+    """Re-picking the same library entry after an edit re-applies the
+    library's values — lets the user 'reset to library defaults'
+    without manually retyping."""
+    from pymillcam.core.tools import Tool, ToolController
+
+    lib_tool = _lib_tool(
+        "3mm flat", diameter=3.0, rpm=18000, feed_xy=1200.0
+    )
+    panel.set_tool_library(_library_with(lib_tool))
+    tc = ToolController(
+        tool_number=1,
+        tool=Tool(
+            name="3mm flat",
+            library_id=lib_tool.id,
+            geometry=dict(lib_tool.geometry),
+        ),
+    )
+    op = ProfileOp(name="P", tool_controller_id=1)
+    panel.set_operation(op, tool_controller=tc)
+
+    # Edit → goes to Custom.
+    panel._profile_form.tool_diameter.setValue(6.0)
+    assert panel._tool_combo.currentText() == "(Custom)"
+    # Re-pick the library entry.
     panel._tool_combo.setCurrentIndex(
         panel._find_combo_index_by_library_id(lib_tool.id)
     )
-
-    assert not panel._profile_form.tool_diameter.isEnabled()
-
-
-def test_picking_custom_unlocks_tool_diameter(
-    panel: PropertiesPanel,
-) -> None:
-    """Switching to (Custom) unpins the library link and re-enables
-    the tool_diameter widget — the user starts editing from whatever
-    state the library tool left them in."""
-    from pymillcam.core.tools import Tool, ToolController
-
-    lib_tool = _lib_tool("3mm flat")
-    panel.set_tool_library(_library_with(lib_tool))
-    tc = ToolController(
-        tool_number=1,
-        tool=Tool(name="3mm flat", library_id=lib_tool.id),
-    )
-    op = ProfileOp(name="P", tool_controller_id=1)
-    panel.set_operation(op, tool_controller=tc)
-    assert not panel._profile_form.tool_diameter.isEnabled()
-
-    panel._tool_combo.setCurrentIndex(panel._tool_combo.count() - 1)
-
-    assert panel._profile_form.tool_diameter.isEnabled()
-    # library_id was cleared — future syncs will show (Custom) not the
-    # prior library tool.
-    assert tc.tool.library_id is None
+    assert tc.tool.library_id == lib_tool.id
+    assert tc.tool.geometry["diameter"] == pytest.approx(3.0)
+    assert tc.spindle_rpm == 18000
+    assert tc.feed_xy == pytest.approx(1200.0)
 
 
 def test_picking_custom_preserves_tool_values(
