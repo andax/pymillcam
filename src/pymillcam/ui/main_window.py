@@ -75,6 +75,7 @@ from pymillcam.engine.time_estimate import (
 from pymillcam.io.dxf_import import DxfImportError, import_dxf
 from pymillcam.io.project_io import ProjectLoadError, load_project, save_project
 from pymillcam.post.uccnc import UccncPostProcessor
+from pymillcam.ui.machine_dialog import MachineDialog
 from pymillcam.ui.preferences_dialog import PreferencesDialog, default_preferences_path
 from pymillcam.ui.properties_panel import PropertiesPanel
 from pymillcam.ui.tool_library_dialog import (
@@ -320,12 +321,15 @@ class MainWindow(QMainWindow):
         self._action_redo.setShortcut(QKeySequence.StandardKey.Redo)
         self._action_redo.setEnabled(False)
         self._action_redo.triggered.connect(self._on_redo)
+        self._action_machine = QAction("&Machine...", self)
+        self._action_machine.triggered.connect(self._on_edit_machine)
         self._action_preferences = QAction("&Preferences...", self)
         self._action_preferences.setShortcut(QKeySequence.StandardKey.Preferences)
         self._action_preferences.triggered.connect(self._on_preferences)
         edit_menu.addAction(self._action_undo)
         edit_menu.addAction(self._action_redo)
         edit_menu.addSeparator()
+        edit_menu.addAction(self._action_machine)
         edit_menu.addAction(self._action_preferences)
 
         tools_menu = menu_bar.addMenu("&Tools")
@@ -1841,6 +1845,20 @@ class MainWindow(QMainWindow):
                 chord_tolerance=self._preferences.default_chord_tolerance_mm
             )
         )
+
+    def _on_edit_machine(self) -> None:
+        """Open the Machine editor dialog. Changes go through the undo stack
+        because the machine lives on the project — same semantics as an
+        operation or settings edit."""
+        dialog = MachineDialog(self._project.machine, self)
+        if dialog.exec() != MachineDialog.DialogCode.Accepted:
+            return
+        new_machine = dialog.result_machine()
+
+        def mutate(project: Project) -> None:
+            project.machine = new_machine
+
+        self._do_action("Edit machine", mutate)
 
     def _on_preferences(self) -> None:
         dialog = PreferencesDialog(self._preferences, self)
