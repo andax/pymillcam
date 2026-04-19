@@ -348,3 +348,69 @@ def test_unit_tangent_at_end_respects_sweep_direction() -> None:
 
     # Ending at angle 0, CW travel → tangent points along -Y.
     assert (tx, ty) == pytest.approx((0.0, -1.0), abs=1e-9)
+
+
+# -------------------------------------- rotate_closed_chain_to_nearest_point
+
+
+def _rect_chain() -> list[LineSegment]:
+    """10 × 10 square, CCW, starting at origin."""
+    return [
+        LineSegment(start=(0.0, 0.0), end=(10.0, 0.0)),
+        LineSegment(start=(10.0, 0.0), end=(10.0, 10.0)),
+        LineSegment(start=(10.0, 10.0), end=(0.0, 10.0)),
+        LineSegment(start=(0.0, 10.0), end=(0.0, 0.0)),
+    ]
+
+
+def test_rotate_places_nearest_point_first_when_target_on_edge() -> None:
+    """Target inside the top edge → the rotated chain starts exactly
+    at the projection onto that edge (segment split inside the run)."""
+    rotated = common.rotate_closed_chain_to_nearest_point(
+        _rect_chain(), (3.0, 10.0)
+    )
+    assert rotated[0].start == pytest.approx((3.0, 10.0), abs=1e-9)
+    # Chain is still closed (last end meets first start).
+    assert rotated[-1].end == pytest.approx(rotated[0].start, abs=1e-9)
+
+
+def test_rotate_preserves_total_chain_length() -> None:
+    original = _rect_chain()
+    rotated = common.rotate_closed_chain_to_nearest_point(original, (7.0, -5.0))
+    assert sum(s.length for s in rotated) == pytest.approx(
+        sum(s.length for s in original), abs=1e-9
+    )
+
+
+def test_rotate_preserves_original_corners_in_same_circular_order() -> None:
+    """The rotation is a seam-swap: the original corners still appear in
+    the same cyclic order, just with a new seam vertex injected where
+    the chain was split."""
+    original = _rect_chain()
+    rotated = common.rotate_closed_chain_to_nearest_point(original, (10.0, 7.0))
+    # All four original corners still appear as segment starts (or ends)
+    # somewhere in the rotated chain.
+    def chain_points(chain: list[LineSegment]) -> list[tuple[float, float]]:
+        pts = [chain[0].start]
+        for seg in chain:
+            pts.append(seg.end)
+        return [(round(x, 6), round(y, 6)) for x, y in pts]
+
+    orig_corners = set(chain_points(original))
+    rot_pts = chain_points(rotated)
+    assert orig_corners.issubset(set(rot_pts))
+
+
+def test_rotate_on_arc_finds_angular_projection() -> None:
+    """Full circle radius 10 centred at origin. Target at (15, 0) projects
+    onto the circle at (10, 0) — which already matches the arc's start,
+    so the chain is unchanged."""
+    arc = ArcSegment(
+        center=(0.0, 0.0), radius=10.0, start_angle_deg=0.0, sweep_deg=360.0
+    )
+    rotated = common.rotate_closed_chain_to_nearest_point([arc], (15.0, 0.0))
+    assert rotated[0].start == pytest.approx((10.0, 0.0), abs=1e-9)
+
+
+def test_rotate_on_empty_chain_returns_empty() -> None:
+    assert common.rotate_closed_chain_to_nearest_point([], (0.0, 0.0)) == []

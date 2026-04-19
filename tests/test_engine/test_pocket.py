@@ -1894,3 +1894,105 @@ def test_spiral_tool_too_large_raises() -> None:
     project, op, _ = _spiral_project(w=10.0, h=3.0, tool_diameter=5.0)
     with pytest.raises(PocketGenerationError, match="tool too large"):
         generate_pocket_toolpath(op, project)
+
+
+# ======================================================== POCKET start_position
+
+
+def _pocket_entry_xy(tp) -> tuple[float, float]:
+    """Where the pocket's tool first descends — the last XY rapid before
+    the first Z feed (plunge or ramp descent)."""
+    last_xy_rapid: tuple[float, float] | None = None
+    for ins in tp.instructions:
+        if (
+            ins.type is MoveType.RAPID
+            and ins.x is not None
+            and ins.y is not None
+        ):
+            last_xy_rapid = (ins.x, ins.y)
+        elif (
+            ins.type is MoveType.FEED
+            and ins.z is not None
+            and ins.z < 0
+            and last_xy_rapid is not None
+        ):
+            return last_xy_rapid
+    raise AssertionError("no XY rapid before plunge")
+
+
+def test_pocket_start_position_rotates_offset_entry() -> None:
+    """OFFSET pocket with start_position set: the outermost ring rotates
+    so its start lands at the nearest point to the user-chosen target.
+    The plunge XY therefore moves from the offsetter's default corner
+    to a point near the target."""
+    project, op, _ = _project_with_rect_pocket(
+        w=50.0, h=30.0, cut_depth=-1.0,
+    )
+    op.multi_depth = False
+    op.ramp = RampConfig(strategy=RampStrategy.PLUNGE)
+    project.settings.spindle_warmup_s = 0.0
+
+    # Without P₀: record the default entry.
+    default_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+
+    # With P₀ near the centre of the top edge: entry should shift there.
+    op.start_position = (25.0, 30.0)
+    p0_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+
+    assert p0_entry != default_entry
+    # Outermost ring sits tool_radius=1.5 inside the boundary, so the top
+    # edge runs at y=28.5. Projection of (25, 30) onto that ring lands
+    # near (25, 28.5).
+    assert p0_entry[0] == pytest.approx(25.0, abs=0.5)
+    assert p0_entry[1] == pytest.approx(28.5, abs=0.5)
+
+
+def test_pocket_start_position_shifts_spiral_entry_to_interior() -> None:
+    """SPIRAL's entry is the innermost ring. start_position rotates every
+    ring (including the innermost) so the plunge at ``rings[0][0].start``
+    lands near the projection of the target onto the innermost ring."""
+    project, op, _ = _project_with_rect_pocket(
+        w=50.0, h=30.0, cut_depth=-1.0, stepover=2.0,
+    )
+    op.strategy = PocketStrategy.SPIRAL
+    op.multi_depth = False
+    op.ramp = RampConfig(strategy=RampStrategy.PLUNGE)
+    project.settings.spindle_warmup_s = 0.0
+
+    default_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+    op.start_position = (25.0, 30.0)
+    p0_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+
+    assert p0_entry != default_entry
+
+
+def test_pocket_start_position_no_op_with_islands() -> None:
+    """Pockets with islands keep the offsetter's default seam — the
+    group-to-group bridges depend on it, and rotating would make them
+    unsafe. Documented limitation: start_position is a no-op when the
+    op has islands."""
+    boundary = GeometryEntity(segments=_rect_segments(40, 30), closed=True)
+    island_arc = ArcSegment(
+        center=(20.0, 15.0), radius=5.0, start_angle_deg=0.0, sweep_deg=360.0,
+    )
+    island = GeometryEntity(segments=[island_arc], closed=True)
+    layer = GeometryLayer(name="L", entities=[boundary, island])
+    tc = ToolController(tool_number=1, tool=Tool(name="t"))
+    tc.tool.geometry["diameter"] = 3.0
+    op = PocketOp(
+        name="P",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name="L", entity_id=boundary.id),
+            GeometryRef(layer_name="L", entity_id=island.id),
+        ],
+        cut_depth=-1.0, stepover=1.5, multi_depth=False,
+        strategy=PocketStrategy.OFFSET,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+    )
+    project = Project(geometry_layers=[layer], tool_controllers=[tc], operations=[op])
+    project.settings.spindle_warmup_s = 0.0
+    default_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+    op.start_position = (20.0, 30.0)
+    p0_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
+    assert default_entry == p0_entry

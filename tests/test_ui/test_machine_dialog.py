@@ -62,6 +62,46 @@ def test_dialog_does_not_mutate_input_machine(qtbot: QtBot) -> None:
     assert d.result_machine().name == "Edited"
 
 
+def test_switching_controller_reseeds_default_macros(qtbot: QtBot) -> None:
+    """A pristine UCCNC machine (macros = UCCNC defaults) switched to GRBL
+    picks up GRBL's defaults — otherwise the project would still emit
+    UCCNC preamble / M6 even after choosing GRBL."""
+    m = MachineDefinition(
+        controller="uccnc",
+        macros={
+            "program_start": "G21 G90 G94 G17",
+            "program_end": "M5\nM30",
+            "tool_change": "T{tool_number} M6",
+        },
+    )
+    d = MachineDialog(m)
+    qtbot.addWidget(d)
+    d._controller.setCurrentText("grbl")
+    assert d._program_start.toPlainText() == "G21 G90"
+    # tool_change flips to GRBL's manual-pause default.
+    assert "M0" in d._tool_change.toPlainText()
+
+
+def test_switching_controller_preserves_customised_macros(qtbot: QtBot) -> None:
+    """When a macro has been hand-edited it shouldn't be replaced on a
+    controller switch — the user clearly meant to keep it."""
+    m = MachineDefinition(
+        controller="uccnc",
+        macros={
+            "program_start": "(SHOP_SPECIFIC)",
+            "program_end": "M5\nM30",
+            "tool_change": "T{tool_number} M6",
+        },
+    )
+    d = MachineDialog(m)
+    qtbot.addWidget(d)
+    d._controller.setCurrentText("grbl")
+    # program_start was customised — still there.
+    assert d._program_start.toPlainText() == "(SHOP_SPECIFIC)"
+    # program_end matched UCCNC default — now GRBL default (same text here).
+    assert d._program_end.toPlainText() == "M5\nM30"
+
+
 def test_non_macro_machine_fields_survive_edit(dialog: MachineDialog) -> None:
     """Travel, spindle range, capabilities etc. aren't exposed in the
     dialog yet; make sure they're not stripped when the user saves."""

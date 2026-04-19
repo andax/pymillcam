@@ -44,6 +44,7 @@ from ._shared import (
     _offset_boundary_inward,
     _polygon_to_ring_group,
     _ramp_stepdown,
+    _rotate_rings_to_start_position,
 )
 from .rest_machining import _polygon_centerlines, _rest_machining_groups
 
@@ -240,10 +241,17 @@ def _compute_offset_rings(
     direction: MillingDirection,
     chord_tolerance: float,
     rest_machining: bool,
+    start_position: tuple[float, float] | None = None,
 ) -> list[list[list[Segment]]]:
     """Compute ring groups for one region. Island-free regions get a
     single flat group; regions with islands go through the buffer +
-    rest-machining pipeline."""
+    rest-machining pipeline.
+
+    ``start_position`` rotates every ring to begin at its nearest point
+    to that target — only applied to island-free regions (with-islands
+    emission relies on the offsetter's default seam for safe group-to-
+    group bridges).
+    """
     if islands:
         return _concentric_rings_with_islands(
             boundary, islands, tool_radius, stepover,
@@ -253,6 +261,7 @@ def _compute_offset_rings(
     rings = _concentric_rings(
         boundary, tool_radius, stepover, direction, chord_tolerance
     )
+    rings = _rotate_rings_to_start_position(rings, start_position)
     return [rings] if rings else []
 
 
@@ -274,6 +283,7 @@ def compute_offset_preview(
             direction=op.direction,
             chord_tolerance=chord_tolerance,
             rest_machining=op.rest_machining,
+            start_position=op.start_position,
         )
         for group in ring_groups:
             for ring in group:
@@ -307,6 +317,7 @@ def emit_offset_region(
         direction=op.direction,
         chord_tolerance=chord_tolerance,
         rest_machining=op.rest_machining,
+        start_position=op.start_position,
     )
     rings = [ring for group in ring_groups for ring in group]
     if not rings:

@@ -882,11 +882,17 @@ The biggest gains come from phases heavy on data models, UI scaffolding, and boi
 - Edit op geometry refs after creation (currently refs are set at
   Add-Op time and not editable; viewport should highlight an op's
   refs and offer Add-to-active-op / Remove-from-active-op actions)
-- User-selectable contour start position P₀ (low priority — the lead/ramp
-  machinery is in place; P₀ currently falls out of the offsetter's
-  arbitrary polygon seed. Let the user click a point on the viewport to
-  rotate the closed chain so P₀ lands there, keeping witness marks in
-  scrap.)
+- ✅ User-selectable contour start position P₀ (April 2026) —
+  `engine/common.rotate_closed_chain_to_nearest_point` + a
+  ``start_position`` field on ``ProfileOp`` / ``PocketOp``. Right-clicking
+  an entity that belongs to the active op surfaces **Set start position
+  here** / **Clear start position**; the viewport renders a yellow
+  target marker at P₀. Profile rotation applies only to closed contours
+  (open chains keep their lead-in / lead-out endpoints); Pocket
+  rotation applies to OFFSET and SPIRAL in island-free regions
+  (with-islands emission keeps the offsetter's seam for safe group-to-
+  group bridges). Undo/redo round-trips the change like any other
+  property edit.
 - ✅ Tool library (April 2026) — `core/tool_library.ToolLibrary`
   with atomic JSON IO + `ui/tool_library_dialog` editor + Properties-
   panel Tool dropdown. Ops link back via `Tool.library_id`; selecting

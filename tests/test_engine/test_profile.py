@@ -1068,3 +1068,78 @@ def test_tabs_count_plateau_bookends_on_final_pass() -> None:
         and i.x is not None
     ]
     assert len(plateau_lifts) == 8
+
+
+# ------------------------------------------------------------- start_position
+
+
+def _entry_xy(tp) -> tuple[float, float]:
+    """Return the (x, y) where the cut starts — the last XY rapid before
+    the first Z feed (plunge) positions the tool over the entry point."""
+    last_xy_rapid: tuple[float, float] | None = None
+    for ins in tp.instructions:
+        if (
+            ins.type is MoveType.RAPID
+            and ins.x is not None
+            and ins.y is not None
+        ):
+            last_xy_rapid = (ins.x, ins.y)
+        elif (
+            ins.type is MoveType.FEED
+            and ins.z is not None
+            and ins.x is None
+            and ins.y is None
+            and last_xy_rapid is not None
+        ):
+            return last_xy_rapid
+    raise AssertionError("no XY rapid before plunge")
+
+
+def test_start_position_rotates_profile_entry_to_nearest_point() -> None:
+    """Setting ``start_position`` on a closed profile rotates the offset
+    contour so the cut begins near the chosen point. Concretely: for a
+    50×30 outside-profile rect and a target near mid-right of the top
+    edge, the first XY feed lands close to x ≈ 25, y ≈ 31.5 (offset
+    contour) rather than at the offsetter's default seed corner."""
+    project, op, _ = _project_with_rectangle(multi_depth=False)
+    op.start_position = (25.0, 30.0)  # near the middle of the top edge
+    tp = generate_profile_toolpath(op, project)
+    first = _entry_xy(tp)
+    # The outside offset of a 50×30 rect by r=1.5 has its top edge at
+    # y=31.5. The projection of (25, 30) onto the offset contour is
+    # (25, 31.5). Allow some tolerance for offsetter discretisation.
+    assert first[0] == pytest.approx(25.0, abs=0.1)
+    assert first[1] == pytest.approx(31.5, abs=0.1)
+
+
+def test_start_position_none_preserves_offsetter_default() -> None:
+    """No start_position set → chain rotation is a no-op. The first XY
+    feed lands at the offsetter's default seed (not the user-chosen
+    position)."""
+    project, op, _ = _project_with_rectangle(multi_depth=False)
+    assert op.start_position is None
+    tp = generate_profile_toolpath(op, project)
+    default_first = _entry_xy(tp)
+    # Set start_position somewhere else → output must differ.
+    op.start_position = (25.0, 30.0)
+    shifted_first = _entry_xy(generate_profile_toolpath(op, project))
+    assert default_first != shifted_first
+
+
+def test_start_position_ignored_on_open_contour() -> None:
+    """Open profiles already have meaningful endpoints (where the
+    lead-in / lead-out anchor). Rotating would disrupt that, so the
+    engine leaves open chains alone even if start_position is set."""
+    project, op, _ = _project_with_rectangle(multi_depth=False, closed=False)
+    # Open contours can't offset inside/outside — switch to ON_LINE so the
+    # engine accepts them.
+    op.offset_side = OffsetSide.ON_LINE
+    tp_default = generate_profile_toolpath(op, project)
+    op.start_position = (25.0, 30.0)
+    tp_with_p0 = generate_profile_toolpath(op, project)
+    # Same instruction stream — start_position is a no-op on open chains.
+    assert [
+        (i.type, i.x, i.y, i.z) for i in tp_default.instructions
+    ] == [
+        (i.type, i.x, i.y, i.z) for i in tp_with_p0.instructions
+    ]

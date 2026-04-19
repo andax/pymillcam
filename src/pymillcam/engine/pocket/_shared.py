@@ -27,6 +27,7 @@ from pymillcam.engine.common import (
     emit_segment as _common_emit_segment,
     resolve_entity as _common_resolve_entity,
     resolve_tool_controller as _common_resolve_tool_controller,
+    rotate_closed_chain_to_nearest_point as _rotate_closed_chain_to_nearest_point,
 )
 from pymillcam.engine.ir import IRInstruction, MoveType
 
@@ -175,6 +176,28 @@ def _emit_segment(
     _common_emit_segment(
         instructions, seg, feed_xy, error_cls=PocketGenerationError
     )
+
+
+def _rotate_rings_to_start_position(
+    rings: list[list[Segment]],
+    start_position: tuple[float, float] | None,
+) -> list[list[Segment]]:
+    """Rotate every ring in ``rings`` to begin at its nearest point to
+    ``start_position``.
+
+    The rings are concentric (emitted by the inward-offset iteration), so
+    rotating each one to its own nearest-point lands the entry wedge on
+    a consistent radial direction through every pass. None leaves the
+    rings untouched. Called by OFFSET / SPIRAL to honour
+    ``PocketOp.start_position``; skipped for pockets with islands where
+    the group-to-group bridges depend on the offsetter's default seam.
+    """
+    if start_position is None or not rings:
+        return rings
+    return [
+        _rotate_closed_chain_to_nearest_point(ring, start_position)
+        for ring in rings
+    ]
 
 
 def _emit_ring_chain(

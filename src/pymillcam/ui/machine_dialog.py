@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from pymillcam.core.machine import MachineDefinition
-from pymillcam.post import registered_controller_names
+from pymillcam.post import get_post, registered_controller_names
 
 
 class MachineDialog(QDialog):
@@ -47,10 +47,15 @@ class MachineDialog(QDialog):
         # setCurrentText falls back to typed text when the value isn't in
         # the preset list, so hand-rolled controller strings survive.
         self._controller.setCurrentText(self._machine.controller)
+        # Track the controller value at the last macro-population so we
+        # know which defaults to compare against when it changes. Updated
+        # whenever we re-seed the macro fields (initial populate, and
+        # every controller-combo change that re-seeds untouched fields).
+        self._macro_base_controller = self._machine.controller
 
         # Macros — multi-line so users can paste realistic shop macros.
-        # Defaults look neutral; the hint labels below each field make it
-        # clear which substitutions are available.
+        # Initial values come from the project's machine; the placeholder
+        # on each field hints at the form the post expects.
         self._program_start = QPlainTextEdit(
             self._machine.macros.get("program_start", "")
         )
@@ -71,6 +76,12 @@ class MachineDialog(QDialog):
             "or: M5\nG53 G0 Z0\nM0 (Change to T{tool_number})  (manual)"
         )
         self._tool_change.setFixedHeight(84)
+
+        # When the user picks a different controller, re-seed any macro
+        # field that still matches the *old* controller's defaults so
+        # switching UCCNC → GRBL actually changes the generated G-code.
+        # User-customised fields are left alone.
+        self._controller.currentTextChanged.connect(self._on_controller_changed)
 
         form = QFormLayout()
         form.addRow("Name", self._name)
@@ -98,6 +109,29 @@ class MachineDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(hint)
         layout.addWidget(buttons)
+
+    def _on_controller_changed(self, new_controller: str) -> None:
+        """Swap the macro fields when the user picks a different controller.
+
+        Each of the three macro widgets is re-seeded only when its current
+        text matches the previous controller's default — i.e. the user
+        hasn't customised it. That way a pristine machine flips cleanly
+        from UCCNC to GRBL and back; a machine with a hand-rolled
+        program-start survives the switch.
+        """
+        old_defaults = get_post(self._macro_base_controller).default_macros
+        new_defaults = get_post(new_controller).default_macros
+        widgets = {
+            "program_start": self._program_start,
+            "program_end": self._program_end,
+            "tool_change": self._tool_change,
+        }
+        for key, widget in widgets.items():
+            current = widget.toPlainText()
+            old_default = old_defaults.get(key, "")
+            if current == old_default:
+                widget.setPlainText(new_defaults.get(key, ""))
+        self._macro_base_controller = new_controller
 
     def result_machine(self) -> MachineDefinition:
         """Return a fresh ``MachineDefinition`` reflecting dialog state."""

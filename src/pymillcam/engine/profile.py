@@ -48,6 +48,7 @@ from pymillcam.engine.common import (
     resolve_entity as _common_resolve_entity,
     resolve_stepdown as _resolve_stepdown,
     resolve_tool_controller as _common_resolve_tool_controller,
+    rotate_closed_chain_to_nearest_point as _rotate_closed_chain_to_nearest_point,
     split_chain_at_length as _split_chain_at_length,
     unit_tangent_at_end as _common_unit_tangent_at_end,
     unit_tangent_at_start as _common_unit_tangent_at_start,
@@ -90,6 +91,10 @@ def compute_profile_preview(op: ProfileOp, project: Project) -> list[Segment]:
         contour = _offset_contour(
             entity, tool_radius, op.offset_side, chord_tolerance, op.direction
         )
+        if op.start_position is not None and entity.closed:
+            contour = _rotate_closed_chain_to_nearest_point(
+                contour, op.start_position
+            )
         lead_in = _build_lead_in(contour, op.lead_in, op.offset_side)
         anchor, tangent = _resolve_lead_out_anchor(
             contour, op.ramp, stepdown, op.cut_depth
@@ -140,6 +145,14 @@ def generate_profile_toolpath(op: ProfileOp, project: Project) -> Toolpath:
         segments = _offset_contour(
             entity, tool_radius, op.offset_side, chord_tolerance, op.direction
         )
+        # Rotate a closed contour's seam to land where the user asked
+        # (typically scrap). Open contours keep their original endpoints
+        # — the lead-in/out machinery relies on them being the real start
+        # / end of the cut.
+        if op.start_position is not None and entity.closed:
+            segments = _rotate_closed_chain_to_nearest_point(
+                segments, op.start_position
+            )
         _emit_contour_passes(
             instructions,
             segments,

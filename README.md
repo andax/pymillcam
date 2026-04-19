@@ -84,6 +84,14 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
   *same layer* / *same geometry type* / *same diameter* (circles only,
   0.01 mm tolerance). Critical for selecting 200 identical mounting
   holes in one click.
+- **User-chosen contour start position (P₀).** Right-click any entity
+  that belongs to the active Profile/Pocket op → **Set start position
+  here**. The engine rotates the offset contour / pocket rings so the
+  cut begins at the nearest point on the toolpath — lead-in, on-contour
+  ramp, SPIRAL entry, and tab bookends all land where you asked
+  (typically in scrap). A yellow target marker shows the current
+  position; **Clear start position** removes it. Pockets with islands
+  keep the offsetter's default seam (documented limitation).
 - **Operation duplication & reordering.** `Ctrl+Shift+D` clones the
   selected op with a unique `(copy)` / `(copy N)` suffix — useful for
   spot drill → peck drill → ream on the same holes, each with its own
@@ -117,7 +125,6 @@ PyMillCAM fills the gap between simple but limited tools like Estlcam and powerf
 See [`docs/pymillcam_plan.md`](docs/pymillcam_plan.md) for the full roadmap.
 Short version:
 
-- User-selectable contour start position (so lead / ramp marks land in scrap)
 - Machine library (multiple saved machines you can switch between; the
   per-project machine dialog is already in)
 - Feed/speed calculator (contextual, in the tool picker)

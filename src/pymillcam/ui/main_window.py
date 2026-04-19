@@ -510,6 +510,7 @@ class MainWindow(QMainWindow):
         self._viewport.clear_profile_preview()
         self._viewport.clear_toolpath_preview()
         self._viewport.set_active_op_refs([])
+        self._viewport.set_start_position(None)
         self._rebuild_tree()
         if prev_op_id is not None and self._find_operation(prev_op_id) is not None:
             self._select_operation_in_tree(prev_op_id)
@@ -803,10 +804,16 @@ class MainWindow(QMainWindow):
     ) -> None:
         if op is None:
             self._viewport.set_active_op_refs([])
+            self._viewport.set_start_position(None)
             self._update_tree_active_op_highlight(set())
             return
         refs = {(ref.layer_name, ref.entity_id) for ref in op.geometry_refs}
         self._viewport.set_active_op_refs(list(refs))
+        # Show the P₀ marker only when the active op carries one. Other
+        # op types don't use ``start_position`` today, so the attribute
+        # check narrows to Profile / Pocket without hardcoding the list.
+        start_position = getattr(op, "start_position", None)
+        self._viewport.set_start_position(start_position)
         self._update_tree_active_op_highlight(refs)
 
     def _update_tree_active_op_highlight(
@@ -957,6 +964,8 @@ class MainWindow(QMainWindow):
         seed: tuple[str, str],
         multi_target: list[tuple[str, str]],
         global_pos: QPoint,
+        *,
+        world_click: tuple[float, float] | None = None,
     ) -> None:
         """Build, exec, and dispatch the unified entity context menu.
 
@@ -975,6 +984,10 @@ class MainWindow(QMainWindow):
             selection or the viewport's) it's the full selection so
             batch Add/Remove works in one action.
           * ``global_pos`` — where on the screen to exec the menu.
+          * ``world_click`` — viewport click location in world
+            coordinates, or ``None`` for tree right-clicks where no
+            geometric anchor exists. Actions that need a specific point
+            (Set start position) only appear when this is provided.
         """
         seed_entity = self._find_entity(*seed)
         if seed_entity is None:
@@ -988,6 +1001,9 @@ class MainWindow(QMainWindow):
         self._add_similar_actions(menu, seed, seed_entity)
         if active_op is not None:
             self._add_op_member_actions(menu, active_op, multi_target)
+            self._add_start_position_actions(
+                menu, active_op, seed, world_click
+            )
 
         if menu.isEmpty():
             return
@@ -997,6 +1013,66 @@ class MainWindow(QMainWindow):
         callback = chosen.data()
         if callable(callback):
             callback()
+
+    def _add_start_position_actions(
+        self,
+        menu: QMenu,
+        op: Operation,
+        seed: tuple[str, str],
+        world_click: tuple[float, float] | None,
+    ) -> None:
+        """Append ``Set / Clear start position`` entries for the active op.
+
+        Only shown when:
+
+        * the op is a Profile or Pocket (the two op types that honour
+          ``start_position``),
+        * the right-clicked entity actually belongs to the op (so we
+          don't let the user anchor to geometry the op never touches),
+        * we have a world click (tree right-clicks skip Set — there's
+          no point to anchor to — but Clear still shows if a position
+          is set).
+        """
+        if not isinstance(op, ProfileOp | PocketOp):
+            return
+        is_member = any(
+            (ref.layer_name, ref.entity_id) == seed
+            for ref in op.geometry_refs
+        )
+        if not is_member:
+            return
+        if not menu.isEmpty():
+            menu.addSeparator()
+        if world_click is not None:
+            act = menu.addAction("Set start position here")
+            act.setData(
+                lambda wp=world_click: self._set_op_start_position(op, wp)
+            )
+        if op.start_position is not None:
+            act = menu.addAction("Clear start position")
+            act.setData(lambda: self._set_op_start_position(op, None))
+
+    def _set_op_start_position(
+        self, op: Operation, position: tuple[float, float] | None
+    ) -> None:
+        """Assign (or clear) ``start_position`` on the given op via the
+        undo stack — matches every other property edit."""
+        op_id = op.id
+
+        def mutate(project: Project) -> None:
+            target = next(
+                (o for o in project.operations if o.id == op_id), None
+            )
+            if target is None:
+                return
+            if isinstance(target, ProfileOp | PocketOp):
+                target.start_position = position
+
+        label = (
+            "Set start position" if position is not None
+            else "Clear start position"
+        )
+        self._do_action(label, mutate)
 
     def _add_similar_actions(
         self,
@@ -1155,6 +1231,11 @@ class MainWindow(QMainWindow):
         Multi-target for Add/Remove: if the seed is part of the
         current viewport selection, act on the whole selection;
         otherwise target only the seed.
+
+        The world-space click position is passed along so actions that
+        need a geometric anchor (e.g. Set start position) know where the
+        user pointed. Tree right-clicks pass ``None`` here — those
+        actions are only offered when a world point is available.
         """
         hit = self._viewport.hit_test_widget(widget_pos)
         selection = list(self._viewport.selection)
@@ -1170,7 +1251,10 @@ class MainWindow(QMainWindow):
         )
 
         global_pos = self._viewport.mapToGlobal(widget_pos.toPoint())
-        self._exec_entity_context_menu(seed, multi_target, global_pos)
+        world_click = self._viewport.widget_to_world(widget_pos)
+        self._exec_entity_context_menu(
+            seed, multi_target, global_pos, world_click=world_click
+        )
 
     def _find_entity(
         self, layer_name: str, entity_id: str

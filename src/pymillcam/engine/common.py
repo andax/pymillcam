@@ -223,6 +223,98 @@ def walk_closed_chain(
     return walked
 
 
+def rotate_closed_chain_to_nearest_point(
+    segments: list[Segment], target: tuple[float, float]
+) -> list[Segment]:
+    """Rotate a closed chain so its start is the chain point nearest ``target``.
+
+    Consumers (Profile / Pocket emit paths) use this to honour the user-
+    chosen contour start position (P₀): instead of emitting the offsetter's
+    arbitrary seed vertex, the chain is rotated so that lead-in, on-contour
+    ramp, or SPIRAL entry lands at a deliberate location — typically in
+    scrap material where witness marks are harmless.
+
+    The chain is assumed closed (first segment's start == last segment's
+    end, within discretisation tolerance). If the chain is open, the
+    rotation still runs but produces a path that joins start-to-end with
+    a seam not in the original data.
+    """
+    if not segments:
+        return segments
+    cumulative = 0.0
+    best_dist_sq = math.inf
+    best_offset = 0.0
+    for seg in segments:
+        if isinstance(seg, LineSegment):
+            d_sq, local = _nearest_on_line(seg, target)
+        else:
+            d_sq, local = _nearest_on_arc(seg, target)
+        if d_sq < best_dist_sq:
+            best_dist_sq = d_sq
+            best_offset = cumulative + local
+        cumulative += seg.length
+    if best_offset <= LENGTH_EPSILON:
+        return segments
+    before, after = split_chain_at_length(segments, best_offset)
+    return after + before
+
+
+def _nearest_on_line(
+    seg: LineSegment, target: tuple[float, float]
+) -> tuple[float, float]:
+    """Closest point on a line segment to ``target``.
+
+    Returns ``(distance_squared, length_along_segment)``. Uses squared
+    distance to avoid a sqrt per comparison.
+    """
+    sx, sy = seg.start
+    ex, ey = seg.end
+    dx, dy = ex - sx, ey - sy
+    length_sq = dx * dx + dy * dy
+    tx, ty = target
+    if length_sq < 1e-18:
+        return (tx - sx) ** 2 + (ty - sy) ** 2, 0.0
+    t = ((tx - sx) * dx + (ty - sy) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    nx, ny = sx + t * dx, sy + t * dy
+    return (tx - nx) ** 2 + (ty - ny) ** 2, t * math.sqrt(length_sq)
+
+
+def _nearest_on_arc(
+    seg: ArcSegment, target: tuple[float, float]
+) -> tuple[float, float]:
+    """Closest point on an arc segment to ``target``.
+
+    Returns ``(distance_squared, length_along_segment)``. Projects the
+    target onto the circle and clamps to the arc's angular range; if the
+    projection falls outside the sweep the nearest endpoint wins.
+    """
+    cx, cy = seg.center
+    tx, ty = target
+    dx, dy = tx - cx, ty - cy
+    if dx * dx + dy * dy < 1e-18:
+        # Target at the arc centre — every arc point equidistant, pick start.
+        sx, sy = seg.start
+        return (tx - sx) ** 2 + (ty - sy) ** 2, 0.0
+    target_angle_deg = math.degrees(math.atan2(dy, dx))
+    delta = target_angle_deg - seg.start_angle_deg
+    # Wrap into (-180, 180] so the sign reflects "CCW from start".
+    delta = (delta + 180.0) % 360.0 - 180.0
+    # Bring into the arc's sweep half-plane before clamping.
+    if seg.sweep_deg > 0 and delta < 0:
+        delta += 360.0
+    elif seg.sweep_deg < 0 and delta > 0:
+        delta -= 360.0
+    lo, hi = sorted((0.0, seg.sweep_deg))
+    delta_clamped = max(lo, min(hi, delta))
+    nearest_angle_deg = seg.start_angle_deg + delta_clamped
+    rad = math.radians(nearest_angle_deg)
+    nx, ny = cx + seg.radius * math.cos(rad), cy + seg.radius * math.sin(rad)
+    dist_sq = (tx - nx) ** 2 + (ty - ny) ** 2
+    length_along = abs(math.radians(delta_clamped)) * seg.radius
+    return dist_sq, length_along
+
+
 # ----------------------------------------------------------------- tangents
 
 

@@ -115,6 +115,10 @@ COLOR_POINT = QColor(240, 200, 80)
 COLOR_SELECTED = QColor(90, 180, 255)
 COLOR_ACTIVE_OP_MEMBER = QColor(110, 220, 130)
 COLOR_PROFILE_PREVIEW = QColor(255, 160, 60)
+# Target marker for the user-chosen contour start position (P₀). Yellow so
+# it contrasts with both the orange profile-preview color and the magenta
+# toolpath color — makes it scannable when all three overlays are visible.
+COLOR_START_POSITION = QColor(255, 220, 0)
 COLOR_TOOLPATH_FEED = QColor(220, 90, 200)
 COLOR_TOOLPATH_RAPID = QColor(80, 200, 220)
 COLOR_BOX_CONTAINED_FILL = QColor(80, 220, 120, 40)
@@ -132,6 +136,12 @@ ARROW_MIN_SEGMENT_PX = 24.0
 # (matters most for pocket strategies that share ring geometry but traverse
 # it in opposite directions, e.g. OFFSET vs SPIRAL).
 PREVIEW_START_RADIUS_PX = 5.0
+
+# Outer / inner radii for the P₀ target marker, in widget pixels. A
+# hollow ring with a crosshair inside — distinct enough from the filled
+# preview-start dot that the two can coexist without confusion.
+START_POSITION_OUTER_PX = 9.0
+START_POSITION_INNER_PX = 3.0
 
 # How close (in widget pixels) the click must be to an entity to hit it.
 HIT_TEST_TOLERANCE_PX = 5.0
@@ -177,6 +187,10 @@ class Viewport(QWidget):
         self._toolpath_preview: list[WalkedMove] = []
         self._show_profile_preview = True
         self._show_toolpath_preview = True
+        # User-chosen contour start position for the active op (world XY).
+        # Rendered as a target marker so the user sees where the cut will
+        # begin even when the preview overlay is hidden. None = not set.
+        self._start_position: tuple[float, float] | None = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -208,6 +222,18 @@ class Viewport(QWidget):
         in a distinct colour beneath the selection layer so the user can
         see at a glance what geometry the selected op references."""
         self._active_op_refs = set(items)
+        self.update()
+
+    def set_start_position(
+        self, position: tuple[float, float] | None
+    ) -> None:
+        """Set (or clear) the active op's user-chosen start position.
+
+        Rendered as a target marker on top of the geometry layer so the
+        user sees where the cut will begin even when the preview overlay
+        is hidden or zoomed out.
+        """
+        self._start_position = position
         self.update()
 
     def set_profile_preview(self, segments: list[Segment]) -> None:
@@ -365,6 +391,8 @@ class Viewport(QWidget):
                 self._draw_profile_preview(painter)
             if self._show_toolpath_preview and self._toolpath_preview:
                 self._draw_toolpath_preview(painter)
+            if self._start_position is not None:
+                self._draw_start_position_marker(painter)
             if self._dragging_box:
                 self._draw_drag_box(painter)
         finally:
@@ -570,6 +598,49 @@ class Viewport(QWidget):
             ]
         )
         painter.drawPolygon(poly)
+
+    def _draw_start_position_marker(self, painter: QPainter) -> None:
+        """Target-style marker at the active op's user-chosen start point.
+
+        Widget-pixel sized so it stays readable at any zoom. A hollow
+        outer ring with a centre dot and crosshair lines — visually
+        distinct from the filled start-dot on the preview overlay.
+        """
+        if self._start_position is None:
+            return
+        wx, wy = self._start_position
+        c = self.world_to_widget(wx, wy)
+        painter.save()
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(COLOR_START_POSITION, 1.8))
+            painter.drawEllipse(
+                c, START_POSITION_OUTER_PX, START_POSITION_OUTER_PX
+            )
+            # Crosshair extending through the ring.
+            painter.drawLine(
+                QPointF(c.x() - START_POSITION_OUTER_PX - 2, c.y()),
+                QPointF(c.x() - START_POSITION_INNER_PX, c.y()),
+            )
+            painter.drawLine(
+                QPointF(c.x() + START_POSITION_INNER_PX, c.y()),
+                QPointF(c.x() + START_POSITION_OUTER_PX + 2, c.y()),
+            )
+            painter.drawLine(
+                QPointF(c.x(), c.y() - START_POSITION_OUTER_PX - 2),
+                QPointF(c.x(), c.y() - START_POSITION_INNER_PX),
+            )
+            painter.drawLine(
+                QPointF(c.x(), c.y() + START_POSITION_INNER_PX),
+                QPointF(c.x(), c.y() + START_POSITION_OUTER_PX + 2),
+            )
+            # Filled centre dot so it's still visible at tiny zoom.
+            painter.setBrush(COLOR_START_POSITION)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(c, START_POSITION_INNER_PX, START_POSITION_INNER_PX)
+        finally:
+            painter.restore()
 
     def _draw_drag_box(self, painter: QPainter) -> None:
         if self._left_press_widget is None or self._drag_current_widget is None:

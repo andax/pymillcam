@@ -30,7 +30,7 @@ from pymillcam.core.segments import Segment
 from pymillcam.core.tools import ToolController
 from pymillcam.engine.ir import IRInstruction
 
-from ._shared import PocketGenerationError
+from ._shared import PocketGenerationError, _rotate_rings_to_start_position
 from .offset import (
     _concentric_rings,
     _emit_rings,
@@ -46,16 +46,20 @@ def _spiral_rings(
     stepover: float,
     direction: MillingDirection,
     chord_tolerance: float,
+    start_position: tuple[float, float] | None = None,
 ) -> list[list[Segment]]:
     """Build inner-first concentric rings for a SPIRAL traversal.
 
     Same rings as OFFSET, reversed so `rings[0]` is the innermost ring
     (where the tool enters the pocket) and `rings[-1]` is the outermost
-    (flush with the wall).
+    (flush with the wall). When ``start_position`` is set, each ring is
+    rotated to begin at its nearest point to that target so the plunge
+    (at ``rings[0][0].start``) lands where the user asked.
     """
     rings = _concentric_rings(
         boundary, tool_radius, stepover, direction, chord_tolerance
     )
+    rings = _rotate_rings_to_start_position(rings, start_position)
     return list(reversed(rings))
 
 
@@ -92,6 +96,7 @@ def compute_spiral_preview(
             stepover=op.stepover,
             direction=op.direction,
             chord_tolerance=chord_tolerance,
+            start_position=op.start_position,
         )
         for ring in rings:
             preview.extend(ring)
@@ -137,6 +142,7 @@ def emit_spiral_region(
         stepover=op.stepover,
         direction=op.direction,
         chord_tolerance=chord_tolerance,
+        start_position=op.start_position,
     )
     if not rings:
         raise PocketGenerationError(

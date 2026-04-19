@@ -146,6 +146,12 @@ class ProfileOp(Operation):
     lead_out: LeadConfig = Field(default_factory=LeadConfig)
     tabs: TabConfig = Field(default_factory=TabConfig)
     ramp: RampConfig = Field(default_factory=RampConfig)
+    # User-chosen start position (world XY) — the engine rotates the
+    # offset contour so its start is the point on the chain nearest this
+    # target. Lead-in / on-contour ramp / tabs then land in a predictable
+    # place (typically scrap) rather than at the offsetter's arbitrary
+    # seed vertex. None = use the offsetter's default start.
+    start_position: tuple[float, float] | None = None
 
 
 class PocketOp(Operation):
@@ -187,6 +193,12 @@ class PocketOp(Operation):
     # corners where an island grows close to the boundary. OFFSET only;
     # ZIGZAG has a different residual pattern handled separately.
     rest_machining: bool = True
+    # User-chosen start position (world XY) — the engine rotates the
+    # outermost ring (OFFSET / SPIRAL first or last ring depending on
+    # strategy, ZIGZAG finishing ring) so its start is the point on the
+    # ring nearest this target. Plunge / ramp entry then lands in a
+    # predictable place. None = use the offsetter's default start.
+    start_position: tuple[float, float] | None = None
 
 
 class DrillOp(Operation):
