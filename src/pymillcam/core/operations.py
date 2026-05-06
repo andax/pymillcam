@@ -206,9 +206,10 @@ class DrillOp(Operation):
 
     Selects ``POINT`` geometry entities (or closed circles — the engine
     treats a full-circle / closed-loop entity's centre as the drill
-    point). Holes are drilled at each referenced point in selection
-    order; TSP re-ordering can be layered on later without changing this
-    model.
+    point). Holes are drilled in selection order by default;
+    ``optimize_order`` runs a TSP heuristic (nearest-neighbour + 2-opt)
+    over the resolved drill points before emitting IR, minimising
+    rapid travel between holes without touching the underlying model.
 
     ``cut_depth`` is the target Z (negative) at the deepest part of the
     hole — the cutter centre lands there regardless of tool-tip geometry
@@ -227,3 +228,8 @@ class DrillOp(Operation):
     # Dwell (seconds) at bottom of each plunge. Helps chip break in
     # through-holes and tougher materials. 0 = no dwell.
     dwell_at_bottom_s: float = 0.0
+    # Run a TSP heuristic (nearest-neighbour + 2-opt) over the drill
+    # points before emitting IR. Reduces rapid travel on grids /
+    # randomly-placed hole arrays. Disable if you need the holes
+    # cut in a specific user-chosen sequence.
+    optimize_order: bool = True

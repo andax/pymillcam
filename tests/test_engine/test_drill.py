@@ -241,16 +241,72 @@ def test_chip_break_cycle_final_retract_exits_to_clearance() -> None:
 # ------------------------------------------------------------ multi-point
 
 
-def test_multiple_holes_are_drilled_in_selection_order() -> None:
+def test_multiple_holes_visit_every_selected_point() -> None:
+    """Whatever the order, the IR must plunge at every selected point
+    exactly once — no holes lost, no holes duplicated."""
     points = [(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)]
     project, op = _make_project(points, cycle=DrillCycle.SIMPLE)
 
     tp = generate_drill_toolpath(op, project)
     body = _strip_preamble(tp.instructions)
-    # Extract the FEED (plunge) move per hole — they carry the point (x, y).
+    plunges = [i for i in body if i.type is MoveType.FEED]
+    got = sorted((p.x, p.y) for p in plunges)
+    assert got == sorted(points)
+    assert len(plunges) == len(points)
+
+
+def test_optimize_order_off_preserves_selection_order() -> None:
+    """Power users who hand-sequenced their drill order can opt out of
+    TSP reordering by setting ``op.optimize_order = False``."""
+    points = [(20.0, 0.0), (0.0, 0.0), (10.0, 5.0)]
+    project, op = _make_project(points, cycle=DrillCycle.SIMPLE)
+    op.optimize_order = False
+
+    tp = generate_drill_toolpath(op, project)
+    body = _strip_preamble(tp.instructions)
     plunges = [i for i in body if i.type is MoveType.FEED]
     got = [(p.x, p.y) for p in plunges]
-    assert got == pytest.approx([(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)])
+    assert got == pytest.approx(points)
+
+
+def test_optimize_order_on_shortens_rapid_travel() -> None:
+    """A drill order designed to zig-zag across a grid is straightened
+    out by the TSP heuristic."""
+    # 3x3 grid presented in a diagonal-bouncing order that NN will fix.
+    bad_order = [
+        (0.0, 0.0), (20.0, 20.0), (10.0, 0.0), (0.0, 20.0),
+        (20.0, 0.0), (10.0, 10.0), (0.0, 10.0), (20.0, 10.0),
+        (10.0, 20.0),
+    ]
+    project_unopt, op_unopt = _make_project(bad_order, cycle=DrillCycle.SIMPLE)
+    op_unopt.optimize_order = False
+    project_opt, op_opt = _make_project(bad_order, cycle=DrillCycle.SIMPLE)
+    op_opt.optimize_order = True
+
+    tp_unopt = generate_drill_toolpath(op_unopt, project_unopt)
+    tp_opt = generate_drill_toolpath(op_opt, project_opt)
+
+    # Same hole set in both outputs.
+    plunges_unopt = sorted(
+        (i.x, i.y) for i in tp_unopt.instructions if i.type is MoveType.FEED
+    )
+    plunges_opt = sorted(
+        (i.x, i.y) for i in tp_opt.instructions if i.type is MoveType.FEED
+    )
+    assert plunges_unopt == plunges_opt
+
+    # Sum the XY-rapid distances (between-hole travel).
+    def xy_rapid_distance(tp) -> float:
+        cur: tuple[float, float] | None = None
+        total = 0.0
+        for inst in tp.instructions:
+            if inst.type is MoveType.RAPID and inst.x is not None and inst.y is not None:
+                if cur is not None:
+                    total += ((inst.x - cur[0]) ** 2 + (inst.y - cur[1]) ** 2) ** 0.5
+                cur = (inst.x, inst.y)
+        return total
+
+    assert xy_rapid_distance(tp_opt) < xy_rapid_distance(tp_unopt)
 
 
 def test_between_holes_stays_at_clearance_not_safe_height() -> None:

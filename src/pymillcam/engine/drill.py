@@ -1,8 +1,10 @@
 """Drill toolpath generator.
 
 Consumes a ``DrillOp`` + ``Project`` and emits IR for drilling each
-referenced point in selection order. No TSP ordering yet — layered on
-later as a separate pass.
+referenced point. By default holes are visited in a nearest-neighbour
++ 2-opt order so rapid travel between holes is minimised; set
+``op.optimize_order = False`` to drill in the user-supplied selection
+order instead.
 
 Three cycle types:
 
@@ -40,6 +42,7 @@ from pymillcam.engine.common import (
     resolve_tool_controller,
 )
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
+from pymillcam.engine.optimizer import optimize_visit_order, points_to_items
 
 # Conservative default peck increment when ``op.peck_depth`` is unset.
 # 1 mm is slow but always finishes; users should override for their
@@ -139,11 +142,16 @@ def generate_drill_toolpath(op: DrillOp, project: Project) -> Toolpath:
 def _resolve_drill_points(
     op: DrillOp, project: Project
 ) -> list[tuple[float, float]]:
-    """Map each geometry ref to its drill (x, y).
+    """Map each geometry ref to its drill (x, y), optionally TSP-ordered.
 
     Point entities contribute their coordinate directly. Closed-contour
     entities contribute their geometric centre — exact centre for a
     single full-circle arc, Shapely centroid for a polygon.
+
+    If ``op.optimize_order`` is set, the resolved points are reordered
+    via nearest-neighbour + 2-opt starting from the project origin.
+    The preview path uses the same resolver, so what the viewport draws
+    matches what the post emits.
     """
     points: list[tuple[float, float]] = []
     for ref in op.geometry_refs:
@@ -151,6 +159,10 @@ def _resolve_drill_points(
             ref.layer_name, ref.entity_id, project, error_cls=DrillGenerationError
         )
         points.append(_entity_drill_point(entity))
+    if op.optimize_order and len(points) > 2:
+        items = points_to_items(points)
+        order = optimize_visit_order(items, start=(0.0, 0.0))
+        points = [points[i] for i in order]
     return points
 
 

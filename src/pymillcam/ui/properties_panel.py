@@ -788,6 +788,11 @@ class _DrillForm(OperationFormBase):
         self.dwell_at_bottom.setDecimals(2)
         self.dwell_at_bottom.setSingleStep(0.1)
         self.dwell_at_bottom.setSuffix(" s")
+        self.optimize_order = QCheckBox("Optimize hole order (TSP)")
+        self.optimize_order.setToolTip(
+            "Reorder holes via nearest-neighbour + 2-opt to minimise rapid "
+            "travel. Turn off if you need a specific drill sequence."
+        )
 
         form = QFormLayout(self)
         form.addRow("Tool diameter", self.tool_diameter)
@@ -797,6 +802,7 @@ class _DrillForm(OperationFormBase):
         form.addRow("", self.peck_depth)
         form.addRow("Chip-break retract", self.chip_break_retract)
         form.addRow("Dwell at bottom", self.dwell_at_bottom)
+        form.addRow("", self.optimize_order)
 
         self._wire(
             self.cycle.currentTextChanged,
@@ -806,6 +812,7 @@ class _DrillForm(OperationFormBase):
             self.peck_depth.valueChanged,
             self.chip_break_retract.valueChanged,
             self.dwell_at_bottom.valueChanged,
+            self.optimize_order.toggled,
         )
 
     def populate(
@@ -819,6 +826,7 @@ class _DrillForm(OperationFormBase):
         self.peck_depth.setValue(op.peck_depth if op.peck_depth is not None else 1.0)
         self.chip_break_retract.setValue(op.chip_break_retract)
         self.dwell_at_bottom.setValue(op.dwell_at_bottom_s)
+        self.optimize_order.setChecked(op.optimize_order)
         self._update_cycle_dependent_enablement(op.cycle, override)
         if tool_controller is not None:
             diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
@@ -837,6 +845,7 @@ class _DrillForm(OperationFormBase):
         op.peck_depth = self.peck_depth.value() if override else None
         op.chip_break_retract = self.chip_break_retract.value()
         op.dwell_at_bottom_s = self.dwell_at_bottom.value()
+        op.optimize_order = self.optimize_order.isChecked()
         self._update_cycle_dependent_enablement(op.cycle, override)
         if tool_controller is not None:
             tool_controller.tool.geometry["diameter"] = self.tool_diameter.value()
