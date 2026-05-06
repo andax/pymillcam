@@ -1996,3 +1996,167 @@ def test_pocket_start_position_no_op_with_islands() -> None:
     op.start_position = (20.0, 30.0)
     p0_entry = _pocket_entry_xy(generate_pocket_toolpath(op, project))
     assert default_entry == p0_entry
+
+
+# ---------- multi-region reorder ----------------------------------------
+
+
+def _square_at(cx: float, cy: float, half: float = 4.0) -> GeometryEntity:
+    return GeometryEntity(segments=[
+        LineSegment(start=(cx - half, cy - half), end=(cx + half, cy - half)),
+        LineSegment(start=(cx + half, cy - half), end=(cx + half, cy + half)),
+        LineSegment(start=(cx + half, cy + half), end=(cx - half, cy + half)),
+        LineSegment(start=(cx - half, cy + half), end=(cx - half, cy - half)),
+    ], closed=True)
+
+
+def _xy_rapid_distance(tp) -> float:
+    cur: tuple[float, float] | None = None
+    total = 0.0
+    for inst in tp.instructions:
+        if (
+            inst.type is MoveType.RAPID
+            and inst.x is not None
+            and inst.y is not None
+        ):
+            if cur is not None:
+                total += math.hypot(inst.x - cur[0], inst.y - cur[1])
+            cur = (inst.x, inst.y)
+    return total
+
+
+def _make_four_region_project(
+    *, optimize_region_order: bool
+) -> tuple[Project, PocketOp]:
+    """Four 8 mm squares whose containment-tree order zig-zags across
+    the workspace. Centers chosen so a TSP pass should reorder them
+    into a near-monotonic walk."""
+    # Selection order intentionally bad: A near origin, B far right,
+    # C near origin again, D far right again — alternating.
+    centers = [(5.0, 5.0), (95.0, 5.0), (5.0, 30.0), (95.0, 30.0)]
+    entities = [_square_at(cx, cy) for cx, cy in centers]
+    layer = GeometryLayer(name="L", entities=entities)
+    tool = Tool(name="flat", geometry={
+        "diameter": 2.0, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+    op = PocketOp(
+        name="Four pockets",
+        tool_controller_id=1,
+        geometry_refs=[
+            GeometryRef(layer_name="L", entity_id=e.id) for e in entities
+        ],
+        cut_depth=-1.0, stepover=1.5,
+        strategy=PocketStrategy.OFFSET,
+        ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+        optimize_region_order=optimize_region_order,
+    )
+    project = Project(
+        geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+    )
+    project.settings.spindle_warmup_s = 0.0
+    return project, op
+
+
+def test_optimize_region_order_off_preserves_selection_order() -> None:
+    """With optimization off, regions are cut in containment-tree order
+    (which mirrors selection order for the disjoint-boundary case).
+    The toolpath visits each region's bounding box in turn."""
+    project, op = _make_four_region_project(optimize_region_order=False)
+    tp = generate_pocket_toolpath(op, project)
+    # Find the entry XY of each region — first XY rapid after every
+    # safe-height retract (z lift).
+    entries: list[tuple[float, float]] = []
+    after_safe_lift = False
+    for inst in tp.instructions:
+        if (
+            inst.type is MoveType.RAPID
+            and inst.x is None
+            and inst.y is None
+            and inst.z is not None
+        ):
+            after_safe_lift = True
+            continue
+        if (
+            after_safe_lift
+            and inst.type is MoveType.RAPID
+            and inst.x is not None
+            and inst.y is not None
+        ):
+            entries.append((inst.x, inst.y))
+            after_safe_lift = False
+    # Four regions => four entry XY rapids. Their X coordinates should
+    # follow the bad selection pattern: ~5, ~95, ~5, ~95.
+    assert len(entries) == 4
+    xs = [e[0] for e in entries]
+    assert xs[0] < 25 and xs[1] > 75 and xs[2] < 25 and xs[3] > 75
+
+
+def test_optimize_region_order_on_shortens_total_rapid_travel() -> None:
+    """Same four regions, but with optimization on: rapid travel is
+    measurably shorter and the same set of regions is still visited."""
+    project_off, op_off = _make_four_region_project(optimize_region_order=False)
+    project_on, op_on = _make_four_region_project(optimize_region_order=True)
+    tp_off = generate_pocket_toolpath(op_off, project_off)
+    tp_on = generate_pocket_toolpath(op_on, project_on)
+
+    # Same set of regions cut: count plunges to cut depth on both.
+    plunges_off = [
+        i for i in tp_off.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.z < -0.5
+    ]
+    plunges_on = [
+        i for i in tp_on.instructions
+        if i.type is MoveType.FEED and i.z is not None and i.z < -0.5
+    ]
+    assert len(plunges_off) == len(plunges_on)
+
+    # Rapid distance is strictly shorter with optimization on.
+    assert _xy_rapid_distance(tp_on) < _xy_rapid_distance(tp_off)
+
+
+def test_optimize_region_order_skipped_for_two_or_fewer_regions() -> None:
+    """Single-region pockets and two-region pockets shouldn't trigger
+    reordering — the gate at len > 2 keeps the IR identical."""
+    # Two disjoint regions: the optimizer would need at least 3 to
+    # have any reordering to do, so off and on must produce the same
+    # rapid distance.
+    centers = [(5.0, 5.0), (95.0, 5.0)]
+    entities = [_square_at(cx, cy) for cx, cy in centers]
+    layer = GeometryLayer(name="L", entities=entities)
+    tool = Tool(name="flat", geometry={
+        "diameter": 2.0, "flute_length": 15,
+        "total_length": 50, "shank_diameter": 3, "flute_count": 2,
+    })
+    tc = ToolController(
+        tool_number=1, tool=tool, feed_xy=1200.0, feed_z=300.0,
+        spindle_rpm=18000,
+    )
+
+    def _build(optimize: bool) -> tuple[Project, PocketOp]:
+        op = PocketOp(
+            name="Two pockets",
+            tool_controller_id=1,
+            geometry_refs=[
+                GeometryRef(layer_name="L", entity_id=e.id) for e in entities
+            ],
+            cut_depth=-1.0, stepover=1.5,
+            strategy=PocketStrategy.OFFSET,
+            ramp=RampConfig(strategy=RampStrategy.PLUNGE),
+            optimize_region_order=optimize,
+        )
+        project = Project(
+            geometry_layers=[layer], tool_controllers=[tc], operations=[op]
+        )
+        project.settings.spindle_warmup_s = 0.0
+        return project, op
+
+    p_off, op_off = _build(False)
+    p_on, op_on = _build(True)
+    tp_off = generate_pocket_toolpath(op_off, p_off)
+    tp_on = generate_pocket_toolpath(op_on, p_on)
+    assert _xy_rapid_distance(tp_off) == pytest.approx(_xy_rapid_distance(tp_on))

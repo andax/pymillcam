@@ -38,7 +38,7 @@ Pure Python, no UI. Takes project model → produces IR (intermediate representa
 - `feeds_speeds.py` — `MaterialPreset` + `compute_feeds_speeds(tool_diameter, flute_count, material)`. Uses Vc × 1000 / (π × D) for RPM and fz × Z × RPM for feed. Ships a built-in table of ~12 hobby-class materials (plywood, MDF, acrylic, aluminium grades, steel, brass, foam). Consumed by the Tool Library dialog's "Calculate from material…" button.
 - `time_estimate.py` — Pure-function operation time estimator (IR-walker over rapid / feed / arc + dwell + tool-change, feed-rate resolution from op cascade). Consumed by `main_window` to annotate ops in the tree.
 - `nesting.py` — Part nesting / layout optimization — not yet
-- `optimizer.py` — Generic visit-order optimizer: `VisitItem` (entry / exit pair) + nearest-neighbour seed + 2-opt polish + `optimize_visit_order` wrapper. Drill consumes it via `op.optimize_order` (default True) for hole-order minimisation. Pocket region ordering and inter-op tool grouping not yet wired in.
+- `optimizer.py` — Generic visit-order optimizer: `VisitItem` (entry / exit pair) + nearest-neighbour seed + 2-opt polish (symmetric fast path with O(1) 4-edge check, asymmetric path with full-tour-distance recompute) + `optimize_visit_order` wrapper. Drill consumes it via `op.optimize_order` (default True) for hole-order minimisation. Pocket consumes it via `op.optimize_region_order` (default True) — the multi-region dispatch in `pocket/__init__.py` emits each region into its own IR block, the optimizer reorders the blocks, then they're concatenated. Inter-op tool grouping not yet wired in.
 
 ### Layer 3: Post-Processors (`src/pymillcam/post/`)
 Transforms IR → G-code for specific controllers.

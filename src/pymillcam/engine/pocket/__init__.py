@@ -29,6 +29,7 @@ from pymillcam.engine.common import (
     z_levels as _z_levels,
 )
 from pymillcam.engine.ir import IRInstruction, MoveType, Toolpath
+from pymillcam.engine.optimizer import VisitItem, optimize_visit_order
 
 from ._shared import (
     PocketGenerationError,
@@ -142,10 +143,18 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
         raise PocketGenerationError(
             f"Pocket {op.name!r}: no closed boundary in the selected geometry."
         )
+
+    # Generate each region's IR into its own block so we can reorder
+    # before concatenation. Every strategy emits a block that begins
+    # with `RAPID z=safe_height` (which retracts whatever Z we're at)
+    # before positioning XY, so the blocks are independently
+    # concatenable in any order.
+    region_blocks: list[list[IRInstruction]] = []
     for boundary, islands in regions:
+        block: list[IRInstruction] = []
         if op.strategy is PocketStrategy.ZIGZAG:
             emit_zigzag_region(
-                instructions, boundary, islands,
+                block, boundary, islands,
                 op=op, tool_controller=tool_controller,
                 tool_radius=tool_radius,
                 chord_tolerance=chord_tolerance,
@@ -156,7 +165,7 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             )
         elif op.strategy is PocketStrategy.SPIRAL:
             emit_spiral_region(
-                instructions, boundary, islands,
+                block, boundary, islands,
                 op=op, tool_controller=tool_controller,
                 tool_radius=tool_radius,
                 chord_tolerance=chord_tolerance,
@@ -167,7 +176,7 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
             )
         else:
             emit_offset_region(
-                instructions, boundary, islands,
+                block, boundary, islands,
                 op=op, tool_controller=tool_controller,
                 tool_radius=tool_radius,
                 chord_tolerance=chord_tolerance,
@@ -176,6 +185,65 @@ def generate_pocket_toolpath(op: PocketOp, project: Project) -> Toolpath:
                 safe_height=safe_height,
                 clearance=clearance,
             )
+        region_blocks.append(block)
+
+    if op.optimize_region_order and len(region_blocks) > 2:
+        region_blocks = _reorder_region_blocks(region_blocks)
+
+    for block in region_blocks:
+        instructions.extend(block)
 
     instructions.append(IRInstruction(type=MoveType.RAPID, z=safe_height))
     return toolpath
+
+
+def _reorder_region_blocks(
+    blocks: list[list[IRInstruction]],
+) -> list[list[IRInstruction]]:
+    """Reorder per-region IR blocks via NN + asymmetric 2-opt.
+
+    Each region's entry XY is the first instruction with both x and y
+    set (the strategy's RAPID-to-entry); its exit XY is the last such
+    instruction (where cutting ends). Blocks without any XY-setting
+    instruction (degenerate / empty) keep their input position.
+    """
+    items: list[VisitItem] = []
+    indexed_blocks: list[tuple[int, list[IRInstruction]]] = []
+    for idx, block in enumerate(blocks):
+        entry = _first_xy(block)
+        exit_xy = _last_xy(block)
+        if entry is None or exit_xy is None:
+            continue
+        items.append(VisitItem(entry=entry, exit=exit_xy))
+        indexed_blocks.append((idx, block))
+    if len(items) < 2:
+        return blocks
+    order = optimize_visit_order(
+        items, start=(0.0, 0.0), assume_symmetric=False
+    )
+    # Splice the optimized blocks back into their original positions
+    # (so any blocks we skipped — currently none in practice — keep
+    # their original index).
+    reordered = list(blocks)
+    optimized_blocks = [indexed_blocks[i][1] for i in order]
+    for slot, (orig_idx, _) in enumerate(indexed_blocks):
+        reordered[orig_idx] = optimized_blocks[slot]
+    return reordered
+
+
+def _first_xy(
+    block: list[IRInstruction],
+) -> tuple[float, float] | None:
+    for inst in block:
+        if inst.x is not None and inst.y is not None:
+            return (inst.x, inst.y)
+    return None
+
+
+def _last_xy(
+    block: list[IRInstruction],
+) -> tuple[float, float] | None:
+    for inst in reversed(block):
+        if inst.x is not None and inst.y is not None:
+            return (inst.x, inst.y)
+    return None

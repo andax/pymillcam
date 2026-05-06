@@ -668,6 +668,14 @@ class _PocketForm(OperationFormBase):
         self.ramp_radius.setSingleStep(0.25)
         self.ramp_radius.setSuffix(" mm")
         self.rest_machining = QCheckBox("Rest machining (V-notch cleanup)")
+        self.optimize_region_order = QCheckBox(
+            "Optimize region order (multi-region only)"
+        )
+        self.optimize_region_order.setToolTip(
+            "When the op spans multiple disjoint regions (separate "
+            "boundaries or boundaries with islands), reorder them via "
+            "nearest-neighbour + 2-opt to minimise rapid travel."
+        )
 
         form = QFormLayout(self)
         form.addRow("Tool diameter", self.tool_diameter)
@@ -682,6 +690,7 @@ class _PocketForm(OperationFormBase):
         form.addRow("Ramp angle", self.ramp_angle)
         form.addRow("Ramp radius", self.ramp_radius)
         form.addRow("", self.rest_machining)
+        form.addRow("", self.optimize_region_order)
 
         self._wire(
             self.strategy.currentTextChanged,
@@ -696,6 +705,7 @@ class _PocketForm(OperationFormBase):
             self.ramp_angle.valueChanged,
             self.ramp_radius.valueChanged,
             self.rest_machining.toggled,
+            self.optimize_region_order.toggled,
         )
 
     def populate(
@@ -715,6 +725,7 @@ class _PocketForm(OperationFormBase):
         self.ramp_angle.setValue(op.ramp.angle_deg)
         self.ramp_radius.setValue(op.ramp.radius)
         self.rest_machining.setChecked(op.rest_machining)
+        self.optimize_region_order.setChecked(op.optimize_region_order)
         if tool_controller is not None:
             diameter = float(tool_controller.tool.geometry.get("diameter", 3.0))
             self.tool_diameter.setValue(diameter)
@@ -741,6 +752,7 @@ class _PocketForm(OperationFormBase):
             radius=self.ramp_radius.value(),
         )
         op.rest_machining = self.rest_machining.isChecked()
+        op.optimize_region_order = self.optimize_region_order.isChecked()
         if tool_controller is not None:
             tool_controller.tool.geometry["diameter"] = self.tool_diameter.value()
 

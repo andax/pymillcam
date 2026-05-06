@@ -13,15 +13,16 @@ API
 * ``order_nearest_neighbour(items, start)`` — greedy seed: at each step
   pick the unvisited item whose entry is closest to the current
   position. O(n^2). Deterministic.
-* ``two_opt(items, order, start)`` — greedy 2-opt polish: repeatedly
-  reverse a sub-sequence if doing so shortens the tour. Stops when a
-  full pass finds no improvement. **Assumes symmetric items**
-  (``entry == exit``). For asymmetric items (open contours, pocket
-  regions with distinct entry/exit) the interior of a reversed
-  sub-tour changes too; that case will need a richer move set when
-  it lands. Drill is symmetric so step 1 ships safely.
-* ``optimize_visit_order(items, start)`` — convenience wrapper:
-  ``two_opt(order_nearest_neighbour(...), ...)``.
+* ``two_opt(items, order, start, *, assume_symmetric)`` — greedy 2-opt
+  polish: repeatedly reverse a sub-sequence if doing so shortens the
+  tour. Stops when a full pass finds no improvement. With
+  ``assume_symmetric=True`` (the default), uses an O(1) 4-edge local
+  check correct only when ``entry == exit`` (e.g. drill points). With
+  ``assume_symmetric=False``, recomputes the full tour distance per
+  candidate swap — slower (O(n) per swap), correct for asymmetric
+  items (pocket regions, open contours).
+* ``optimize_visit_order(items, start, *, assume_symmetric)`` —
+  convenience wrapper: NN seed + 2-opt polish.
 * ``total_rapid_distance(items, order, start)`` — sum of rapid
   distances along the tour. Test helper and tie-breaker.
 
@@ -98,6 +99,7 @@ def two_opt(
     start: Point,
     *,
     max_passes: int = 20,
+    assume_symmetric: bool = True,
 ) -> list[int]:
     """Greedy 2-opt polish on an existing order.
 
@@ -106,22 +108,40 @@ def two_opt(
     no improvement; otherwise caps at ``max_passes`` (rarely reached
     for sane inputs).
 
-    Correct only for symmetric items where ``entry == exit`` (drill
-    points). For asymmetric items the interior cost of the reversed
-    sub-sequence also changes; the local check below understates the
-    true delta for those, which can either miss real improvements or
-    accept false ones. Extend when pocket regions land.
+    With ``assume_symmetric=True`` (default), uses an O(1) 4-edge
+    local check — correct only when ``entry == exit`` for every item
+    (drill points). With ``assume_symmetric=False``, computes the full
+    tour distance for each candidate swap, which is O(n) per swap but
+    correct for asymmetric items (pocket regions, open contours).
     """
     n = len(items)
     if n < 3:
         return list(order)
     result = list(order)
+    if assume_symmetric:
+        for _ in range(max_passes):
+            improved = False
+            for i in range(n - 1):
+                for j in range(i + 1, n):
+                    if _two_opt_swap_improves(items, result, start, i, j):
+                        result[i:j + 1] = reversed(result[i:j + 1])
+                        improved = True
+            if not improved:
+                break
+        return result
+    # Asymmetric path: compare full tour distances at each candidate
+    # swap. For the small N typical of pocket region ordering (< 50)
+    # the O(n^3) per pass is trivial.
+    current_dist = total_rapid_distance(items, result, start)
     for _ in range(max_passes):
         improved = False
         for i in range(n - 1):
             for j in range(i + 1, n):
-                if _two_opt_swap_improves(items, result, start, i, j):
-                    result[i:j + 1] = reversed(result[i:j + 1])
+                candidate = result[:i] + list(reversed(result[i:j + 1])) + result[j + 1:]
+                cand_dist = total_rapid_distance(items, candidate, start)
+                if cand_dist < current_dist - _IMPROVEMENT_EPS:
+                    result = candidate
+                    current_dist = cand_dist
                     improved = True
         if not improved:
             break
@@ -163,16 +183,20 @@ def optimize_visit_order(
     start: Point,
     *,
     polish: bool = True,
+    assume_symmetric: bool = True,
 ) -> list[int]:
     """Nearest-neighbour seed + optional 2-opt polish.
 
-    Use this as the default entry point. Pass ``polish=False`` to skip
-    2-opt for very large item counts where the O(n^2) per pass would
-    show up (none of PyMillCAM's current callers come close).
+    Use this as the default entry point. Set
+    ``assume_symmetric=False`` for asymmetric items (open contours,
+    pocket regions with distinct entry/exit). Pass ``polish=False`` to
+    skip 2-opt entirely.
     """
     order = order_nearest_neighbour(items, start)
     if polish:
-        order = two_opt(items, order, start)
+        order = two_opt(
+            items, order, start, assume_symmetric=assume_symmetric
+        )
     return order
 
 

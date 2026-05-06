@@ -199,6 +199,12 @@ class PocketOp(Operation):
     # ring nearest this target. Plunge / ramp entry then lands in a
     # predictable place. None = use the offsetter's default start.
     start_position: tuple[float, float] | None = None
+    # When the op covers multiple disjoint pocket regions (multiple
+    # boundaries selected, or a boundary with islands resolved into
+    # separate (boundary, [islands]) regions), reorder the regions
+    # via NN + 2-opt to minimise rapid travel between them. The
+    # containment-tree order is preserved when this is False.
+    optimize_region_order: bool = True
 
 
 class DrillOp(Operation):

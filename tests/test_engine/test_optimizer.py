@@ -173,8 +173,7 @@ def test_total_distance_for_known_tour():
 
 def test_asymmetric_visit_items_are_supported_by_nn():
     """Open contours have distinct entry/exit. NN should pick the
-    nearer entry and advance from the exit. (2-opt is documented as
-    symmetric-only and isn't tested here.)"""
+    nearer entry and advance from the exit."""
     items = [
         VisitItem(entry=(0.0, 0.0), exit=(5.0, 0.0)),  # left
         VisitItem(entry=(10.0, 0.0), exit=(15.0, 0.0)),  # right
@@ -182,3 +181,58 @@ def test_asymmetric_visit_items_are_supported_by_nn():
     # Starting at -1 the left one's entry is closer; after that the
     # current position is at x=5 so the right one is next.
     assert order_nearest_neighbour(items, (-1.0, 0.0)) == [0, 1]
+
+
+# --------------------------------------- asymmetric 2-opt path
+
+
+def test_two_opt_asymmetric_handles_distinct_entry_exit():
+    """Three regions arranged so a sub-sequence reversal *would* improve
+    the tour for symmetric items but not for these asymmetric ones —
+    or vice versa. The full-tour-distance path must compute correctly
+    rather than rely on the 4-edge approximation."""
+    # Three "regions": each is an asymmetric segment. Order [0, 1, 2]
+    # is suboptimal; [0, 2, 1] is better when entries/exits matter.
+    items = [
+        VisitItem(entry=(0.0, 0.0), exit=(1.0, 0.0)),
+        VisitItem(entry=(20.0, 0.0), exit=(21.0, 0.0)),
+        VisitItem(entry=(2.0, 0.0), exit=(3.0, 0.0)),
+    ]
+    start = (0.0, 0.0)
+    bad = [0, 1, 2]
+    bad_dist = total_rapid_distance(items, bad, start)
+    polished = two_opt(items, bad, start, assume_symmetric=False)
+    pol_dist = total_rapid_distance(items, polished, start)
+    assert pol_dist < bad_dist
+
+
+def test_two_opt_asymmetric_idempotent_on_optimal():
+    items = [
+        VisitItem(entry=(0.0, 0.0), exit=(1.0, 0.0)),
+        VisitItem(entry=(2.0, 0.0), exit=(3.0, 0.0)),
+        VisitItem(entry=(4.0, 0.0), exit=(5.0, 0.0)),
+    ]
+    start = (-1.0, 0.0)
+    optimal = [0, 1, 2]
+    polished = two_opt(items, optimal, start, assume_symmetric=False)
+    assert polished == optimal
+
+
+def test_optimize_visit_order_asymmetric_beats_input():
+    """End-to-end: NN + asymmetric 2-opt on a deliberately bad input
+    order produces a strictly shorter tour."""
+    rng = random.Random(99)
+    items = []
+    for _ in range(15):
+        ax, ay = rng.uniform(0, 100), rng.uniform(0, 100)
+        bx, by = ax + rng.uniform(-5, 5), ay + rng.uniform(-5, 5)
+        items.append(VisitItem(entry=(ax, ay), exit=(bx, by)))
+    start = (0.0, 0.0)
+    input_order = list(range(len(items)))
+    optimized = optimize_visit_order(
+        items, start, assume_symmetric=False
+    )
+    assert sorted(optimized) == input_order
+    assert total_rapid_distance(items, optimized, start) <= (
+        total_rapid_distance(items, input_order, start) + 1e-9
+    )
